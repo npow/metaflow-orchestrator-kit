@@ -438,6 +438,57 @@ def _check_environment_type(files: dict) -> _Check:
     )
 
 
+def _check_tag_after_subcommand(files: dict) -> _Check:
+    """--tag must appear AFTER the step/run subcommand, not before it.
+
+    Metaflow's top-level CLI does not accept --tag as a global flag.
+    It is only valid as an argument to step/run/init subcommands.
+    Passing --tag before the subcommand causes:
+        Error: no such option: --tag
+
+    Anti-pattern (wrong):
+        python flow.py --no-pylint --tag foo step start --run-id ...
+
+    Correct:
+        python flow.py --no-pylint step start --tag foo --run-id ...
+
+    Detection: look for a list that contains "--tag" before "step" or "run".
+    """
+    all_content = "\n".join(files.values())
+
+    # Look for the pattern: "--tag" appears in a list before "step" or before cmd +=
+    # Heuristic: "--tag" followed by "step" in same array literal, where --tag comes first.
+    # Pattern: ["--tag", ..., "step", ...] or "--tag" ... then "step" in same expression.
+    wrong_tag_order = bool(
+        re.search(
+            r'"--tag"[^]]*"step"',
+            all_content,
+        ) or re.search(
+            r"'--tag'[^]]*'step'",
+            all_content,
+        )
+    )
+    if wrong_tag_order:
+        return _Check(
+            "--tag placed after step subcommand (not before)",
+            False,
+            "--tag appears before 'step' in a command array",
+            hint=(
+                "Move --tag flags to AFTER the step subcommand name.  Metaflow's top-level "
+                "CLI does not accept --tag as a global flag — it causes "
+                "'Error: no such option: --tag'.  "
+                "Wrong:   cmd = [python, flow, '--tag', t, 'step', name, ...]\n"
+                "Correct: cmd = [python, flow, 'step', name, '--tag', t, ...]"
+            ),
+        )
+
+    return _Check(
+        "--tag placed after step subcommand (not before)",
+        True,
+        "no --tag-before-step pattern found",
+    )
+
+
 def _check_pythonpath_no_extension_package(files: dict) -> _Check:
     """PYTHONPATH injected into step commands must not include the extension package itself.
 
@@ -614,6 +665,7 @@ def validate(directory: str) -> List[_Check]:
         _check_retry_count_not_hardcoded(files),
         _check_datastore_sysroot(files),
         _check_environment_type(files),
+        _check_tag_after_subcommand(files),
         _check_pythonpath_no_extension_package(files),
         _check_scheduler_api_optional(files),
         _check_from_deployment_dotted(files),

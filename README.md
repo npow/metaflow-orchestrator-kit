@@ -224,9 +224,18 @@ If you still see extension-loading failures, the container's Python may discover
 pip install metaflow requests  # in the step's bash preamble
 ```
 
-**9. Scheduler auth tokens expire** — If your scheduler issues short-lived auth tokens (Windmill, Kestra), tests that start a long-running deploy+trigger sequence may fail with 401 on the trigger API call because the token used at `create()` time has expired by the time `trigger()` is called. Fix: either use long-lived tokens (service account tokens in Windmill: `Settings > Users & Tokens > Tokens > Add token` with no expiry), or fetch a fresh token at the start of each `trigger()` call rather than caching the token from `create()`.
+**9. `--tag` passed as a global CLI flag instead of a subcommand argument** — Metaflow's flow CLI does not accept `--tag` as a top-level global option. `--tag` is only valid after the subcommand (`step`, `run`, `init`). Passing it before the subcommand causes `Error: no such option: --tag` inside the Docker worker. Fix: append `--tag <value>` to the command list after `"step"`, `"step_name"`, not before:
+```python
+# Wrong — --tag before "step":
+cmd = [python, flow, "--no-pylint", "--tag", tag, "step", step_name, ...]
 
-**10. Scheduler internal indexing delay after workflow creation** — Some schedulers (Mage, Prefect, Windmill) index or cache newly-created pipelines/DAGs asynchronously. If you make a second API call immediately after the creation POST (e.g. creating a schedule, listing runs, or triggering), the scheduler may return 500 or `'NoneType' object has no attribute 'uuid'` because the pipeline is not yet in the cache. Fix: add a short delay between `_create_pipeline()` / `_compile_workflow()` and any subsequent API call that references the newly-created resource. A 1–2 second sleep is enough for most schedulers. If the second call is not strictly required for the trigger to work (e.g. schedule creation for Mage), make it optional and catch failures gracefully:
+# Correct — --tag after the step subcommand:
+cmd = [python, flow, "--no-pylint", "step", step_name, "--tag", tag, ...]
+```
+
+**10. Scheduler auth tokens expire** — If your scheduler issues short-lived auth tokens (Windmill, Kestra), tests that start a long-running deploy+trigger sequence may fail with 401 on the trigger API call because the token used at `create()` time has expired by the time `trigger()` is called. Fix: either use long-lived tokens (service account tokens in Windmill: `Settings > Users & Tokens > Tokens > Add token` with no expiry), or fetch a fresh token at the start of each `trigger()` call rather than caching the token from `create()`.
+
+**11. Scheduler internal indexing delay after workflow creation** — Some schedulers (Mage, Prefect, Windmill) index or cache newly-created pipelines/DAGs asynchronously. If you make a second API call immediately after the creation POST (e.g. creating a schedule, listing runs, or triggering), the scheduler may return 500 or `'NoneType' object has no attribute 'uuid'` because the pipeline is not yet in the cache. Fix: add a short delay between `_create_pipeline()` / `_compile_workflow()` and any subsequent API call that references the newly-created resource. A 1–2 second sleep is enough for most schedulers. If the second call is not strictly required for the trigger to work (e.g. schedule creation for Mage), make it optional and catch failures gracefully:
 ```python
 try:
     schedule_id = _create_api_trigger(client, pipeline_uuid)

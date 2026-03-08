@@ -347,12 +347,20 @@ class {classname}DeployerImpl(DeployerImpl):
             # every step subprocess so @project reads the correct branch_name.
             cmd += ["--branch", branch]
 
+        # IMPORTANT: --tag must come AFTER the "step" subcommand, not before it.
+        # Metaflow's top-level CLI does not accept --tag as a global flag; it is
+        # only valid as an argument to "step", "run", "init", etc.
+        # Wrong:  python flow.py --tag foo step start ...
+        # Correct: python flow.py step start --tag foo ...
         cmd += [
             "step", step_name,
             "--run-id", run_id,
             "--task-id", task_id,
             "--retry-count", str(retry_count),  # TODO: SCHEDULER API — replace 0 with scheduler attempt
             "--input-paths", input_paths,
+            # TODO: SCHEDULER API — add --tag options here (after "step <name>"), not before:
+            #   for tag in tags:
+            #       cmd += ["--tag", tag]
         ]
 
         return cmd
