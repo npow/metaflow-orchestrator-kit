@@ -438,6 +438,61 @@ def _check_environment_type(files: dict) -> _Check:
     )
 
 
+def _check_pythonpath_no_extension_package(files: dict) -> _Check:
+    """PYTHONPATH injected into step commands must not include the extension package itself.
+
+    When a Docker-based scheduler worker receives PYTHONPATH pointing to the host
+    source tree, Python will discover and load ALL metaflow_extensions/ directories
+    on that path — including private/internal extensions installed on the host that
+    depend on services not available inside the container.  This causes:
+        Cannot locate metadata_provider plugin 'service'
+        ImportError: No module named 'requests' (or other missing deps)
+
+    The PYTHONPATH for step workers should include only the OSS metaflow source.
+    It must NOT include the extension package itself or site-packages.
+
+    Detection: look for both PYTHONPATH construction and a reference to the
+    extension package directory in the same deployer or compiler file.
+    """
+    # Look in all files for PYTHONPATH construction
+    all_content = "\n".join(files.values())
+
+    # If there's no PYTHONPATH injection at all, skip this check.
+    if "PYTHONPATH" not in all_content:
+        return _Check(
+            "PYTHONPATH for step workers excludes extension package",
+            True,
+            "no PYTHONPATH injection found — skipped",
+        )
+
+    # Look for the pattern where PYTHONPATH includes site-packages or the
+    # extension package directory (a path ending in site-packages or containing
+    # the package name).
+    # We check for os.environ.get("PYTHONPATH", "") which would include site-packages.
+    site_packages_in_pythonpath = bool(
+        re.search(r'PYTHONPATH.*site.packages', all_content) or
+        re.search(r'site.packages.*PYTHONPATH', all_content)
+    )
+    if site_packages_in_pythonpath:
+        return _Check(
+            "PYTHONPATH for step workers excludes extension package",
+            False,
+            "PYTHONPATH appears to include a site-packages path",
+            hint=(
+                "Do not pass os.environ['PYTHONPATH'] (which includes site-packages) to Docker "
+                "worker PYTHONPATH.  Set PYTHONPATH to the OSS metaflow source only.  "
+                "Including site-packages exposes host-installed private extensions that "
+                "fail inside the container (missing services, missing deps)."
+            ),
+        )
+
+    return _Check(
+        "PYTHONPATH for step workers excludes extension package",
+        True,
+        "no site-packages path found in PYTHONPATH construction",
+    )
+
+
 def _check_scheduler_api_optional(files: dict) -> _Check:
     """Secondary scheduler API calls (e.g. schedule creation) must not block trigger().
 
@@ -559,6 +614,7 @@ def validate(directory: str) -> List[_Check]:
         _check_retry_count_not_hardcoded(files),
         _check_datastore_sysroot(files),
         _check_environment_type(files),
+        _check_pythonpath_no_extension_package(files),
         _check_scheduler_api_optional(files),
         _check_from_deployment_dotted(files),
     ]

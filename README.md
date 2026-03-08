@@ -201,13 +201,28 @@ Every new orchestrator implementation hits the same bugs. The scaffold pre-solve
 
 **7. Extension not auto-discovered (`Deployer` missing `.my_scheduler()`)** — `Deployer(flow_file).my_scheduler()` raises `AttributeError` with no indication why. Metaflow reads `DEPLOYER_IMPL_PROVIDERS_DESC` from `mfextinit_<name>.py`; if it's missing, misnamed, in the wrong directory, or the descriptor is malformed, the deployer is silently not registered. Fix: ensure `mfextinit_<name>.py` lives at `metaflow_extensions/<name>/plugins/` and `DEPLOYER_IMPL_PROVIDERS_DESC = [("<name>", ".<name>.<name>_deployer.<Class>DeployerImpl")]`. Run `python -m metaflow_orchestrator_kit.validate .` to catch this before CI.
 
-**8. Docker-based workers cannot reach the local filesystem** — Schedulers that run workers in Docker containers (Windmill, Prefect, Argo) isolate the worker filesystem from the host. The step command uses the absolute host path to the flow file (e.g. `/Users/me/project/flow.py`), but that path does not exist inside the container. The same applies to `METAFLOW_DATASTORE_SYSROOT_LOCAL`: if the sysroot path is a host-local directory, the worker writes to a different directory than the deployer reads from, so `wait_for_deployed_run()` polls forever. Fix: add volume mounts to your docker-compose for the scheduler service to share `/Users` (or equivalent) and `/tmp` between host and worker container. For local devstack testing, add to your `docker-compose.yml` worker service:
+**8. Docker-based workers cannot reach the local filesystem** — Schedulers that run workers in Docker containers (Windmill, Prefect, Argo) isolate the worker filesystem from the host. The step command uses the absolute host path to the flow file (e.g. `/Users/me/project/flow.py`), but that path does not exist inside the container. The same applies to `METAFLOW_DATASTORE_SYSROOT_LOCAL`: if the sysroot path is a host-local directory, the worker writes to a different directory than the deployer reads from, so `wait_for_deployed_run()` polls forever.
+
+**Recommended fix (production):** Build a custom worker Docker image that has Metaflow installed via `pip install metaflow` and use a shared object store (S3/MinIO) as the datastore. This avoids all filesystem sharing problems.
+
+**Quick fix (local devstack only):** Add volume mounts to your docker-compose worker service and set `PYTHONPATH`:
 ```yaml
 volumes:
-  - /Users:/Users
+  - /Users:/Users   # macOS — use /home:/home on Linux
   - /tmp:/tmp
 ```
-Also set `PYTHONPATH` inside the worker container if Metaflow is not installed there — point it to the mounted source: `PYTHONPATH=/path/to/metaflow`.
+**Warning:** Volume mounts expose your entire host user directory to the container, including your conda `site-packages`. Python running inside the container will discover and load all Metaflow extensions installed on the host — including any internal/private extensions that depend on services not available inside the container (e.g. a `service` metadata provider that requires an internal API). This causes cryptic failures like `Cannot locate metadata_provider plugin 'service'`. Mitigation: set `PYTHONPATH` to only the OSS metaflow source, not your full site-packages path, and do NOT include the extension package itself in `PYTHONPATH`:
+```bash
+# In the bash script emitted by the compiler (wrong):
+export PYTHONPATH=/path/to/metaflow:/path/to/metaflow-myscheduler
+
+# Correct: only the core source, not extension packages
+export PYTHONPATH=/path/to/metaflow
+```
+If you still see extension-loading failures, the container's Python may discover `metaflow_extensions/` directories within the mounted source tree. The safest solution for local testing is to install Metaflow inside the worker container's init script:
+```bash
+pip install metaflow requests  # in the step's bash preamble
+```
 
 **9. Scheduler auth tokens expire** — If your scheduler issues short-lived auth tokens (Windmill, Kestra), tests that start a long-running deploy+trigger sequence may fail with 401 on the trigger API call because the token used at `create()` time has expired by the time `trigger()` is called. Fix: either use long-lived tokens (service account tokens in Windmill: `Settings > Users & Tokens > Tokens > Add token` with no expiry), or fetch a fresh token at the start of each `trigger()` call rather than caching the token from `create()`.
 

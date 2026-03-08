@@ -209,14 +209,24 @@ class {classname}DeployerImpl(DeployerImpl):
             # DOCKER WORKERS NOTE: If {name} runs steps inside Docker containers,
             # the flow file path and sysroot path are host-local and will NOT exist
             # inside the container unless you mount them via docker-compose volumes.
-            # Add to your docker-compose worker service:
+            #
+            # OPTION A (recommended for production): Use a shared object store
+            # (S3/MinIO) as the datastore and install metaflow in the worker image.
+            # No volume mounts needed.
+            #
+            # OPTION B (local devstack only): Add volume mounts to docker-compose:
             #   volumes:
-            #     - /Users:/Users   (or /home:/home on Linux)
+            #     - /Users:/Users   (macOS) or /home:/home (Linux)
             #     - /tmp:/tmp
-            # Also set PYTHONPATH if Metaflow is not installed in the container:
-            #   "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
-            # Without volume mounts, steps fail with FileNotFoundError (flow file)
-            # or wait_for_deployed_run() polls forever (sysroot not found).
+            # Then set PYTHONPATH to the OSS metaflow source ONLY — do NOT include
+            # extension packages, or the worker will load host-installed extensions
+            # (e.g. internal Netflix extensions) that fail inside the container:
+            #   "PYTHONPATH": "/path/to/metaflow",  # OSS source only
+            # If metaflow is still not importable, add a pip install to the step preamble:
+            #   "pip install metaflow requests" in the bash script before running the step.
+            #
+            # Without any fix, steps fail with FileNotFoundError (flow file) or
+            # wait_for_deployed_run() polls forever (sysroot not found).
         }}
 
         # TODO: SCHEDULER API — build the actual workflow definition here.
