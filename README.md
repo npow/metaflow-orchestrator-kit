@@ -201,7 +201,16 @@ Every new orchestrator implementation hits the same bugs. The scaffold pre-solve
 
 **7. Extension not auto-discovered (`Deployer` missing `.my_scheduler()`)** — `Deployer(flow_file).my_scheduler()` raises `AttributeError` with no indication why. Metaflow reads `DEPLOYER_IMPL_PROVIDERS_DESC` from `mfextinit_<name>.py`; if it's missing, misnamed, in the wrong directory, or the descriptor is malformed, the deployer is silently not registered. Fix: ensure `mfextinit_<name>.py` lives at `metaflow_extensions/<name>/plugins/` and `DEPLOYER_IMPL_PROVIDERS_DESC = [("<name>", ".<name>.<name>_deployer.<Class>DeployerImpl")]`. Run `python -m metaflow_orchestrator_kit.validate .` to catch this before CI.
 
-**8. Docker workers do not share `/tmp` between steps** — Each step in a Docker-worker scheduler (Windmill, Prefect, Argo) runs in a separate container. Files written to `/tmp` in the init step (e.g. a `run_id` file) are NOT visible to the next step container. Concretely: if the init script writes `echo $RUN_ID > /tmp/mf_run_id.txt`, the start step running in a different container reads an empty file and fails with `ERROR: RUN_ID not set`. Fix: use the scheduler's native inter-step data passing mechanism (return values, environment variable injection, shared volumes, or a short-lived key-value store) to pass the run ID from init to subsequent steps. For example in Windmill, a bash module's stdout is the return value — print the run ID as JSON and access it as `results.<module_id>` in later modules.
+**8. Docker workers do not share `/tmp` between steps; bash input passing varies by scheduler** — Each step in a Docker-worker scheduler (Windmill, Prefect, Argo) runs in a separate container. Files written to `/tmp` in the init step (e.g. a `run_id` file) are NOT visible to the next step container.
+
+Additionally, different schedulers pass inputs to bash scripts in different ways:
+- Some schedulers inject inputs as environment variables (`$MY_INPUT`)
+- Windmill CE injects inputs via a **prepended shell preamble** (`my_input="value"` prepended before the script). This is a shell variable, not an exported env var. If your script then runs `export SOME_OTHER_VAR=...`, it may shadow the prepended variable. This causes inputs to appear empty even though the scheduler shows them as passed correctly.
+
+Options for reliable inter-step data passing in Docker schedulers:
+1. **Use `same_worker: true`** (Windmill-specific): forces all steps in the flow to run in the same worker container, so `/tmp` is shared. This is the most reliable option for local integration testing.
+2. **Use the scheduler's native return-value mechanism**: some schedulers let bash modules return values (e.g. Windmill stdout) that subsequent modules receive as inputs. Test with a minimal script before relying on this pattern.
+3. **Use an external store**: write the run ID to a shared key-value store (Redis, database) and read it from subsequent steps.
 
 **8b. Docker-based workers cannot reach the local filesystem (host paths)** — Schedulers that run workers in Docker containers (Windmill, Prefect, Argo) isolate the worker filesystem from the host. The step command uses the absolute host path to the flow file (e.g. `/Users/me/project/flow.py`), but that path does not exist inside the container. The same applies to `METAFLOW_DATASTORE_SYSROOT_LOCAL`: if the sysroot path is a host-local directory, the worker writes to a different directory than the deployer reads from, so `wait_for_deployed_run()` polls forever.
 
