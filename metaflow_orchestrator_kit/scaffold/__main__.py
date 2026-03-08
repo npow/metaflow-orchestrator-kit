@@ -246,6 +246,16 @@ class {classname}DeployerImpl(DeployerImpl):
         #   4. required_env injected into every step container/process env
         #   5. branch stored so it can be passed to each step command
         #
+        # FLOW PARAMETERS in OSS Metaflow:
+        #   Flow parameters are passed to the start step via environment variables,
+        #   not via --run-param in the init command.  Set these env vars for the
+        #   step that executes the @Parameter fields:
+        #       METAFLOW_PARAMETER_<NAME>=<value>   (one per parameter)
+        #   Example: a flow with @Parameter("alpha", default=0.5) needs:
+        #       export METAFLOW_PARAMETER_ALPHA="0.9"   # override at trigger time
+        #   These must be injected into the step container environment for the
+        #   start step (and any step that reads parameters).
+        #
         # DOCKER WORKERS — inter-step data passing:
         #   Each step runs in a separate container; /tmp is NOT shared between steps.
         #   Do not write run_id or other coordination data to /tmp files.

@@ -226,7 +226,16 @@ If you still see extension-loading failures, the container's Python may discover
 pip install metaflow requests  # in the step's bash preamble
 ```
 
-**9. `--run-param` is not an OSS Metaflow init option** — Some internal Metaflow forks added `--run-param "name=value"` to the `init` command to pre-populate parameters. OSS Metaflow's `init` does not have this option; passing it causes `Error: no such option: --run-param`. In OSS Metaflow, flow parameters are resolved during step execution, not during init. Do not include `--run-param` in the init step command if your extension must work with OSS Metaflow.
+**9. `--run-param` is not an OSS Metaflow init option; use `METAFLOW_PARAMETER_<NAME>` env vars instead** — Some internal Metaflow forks added `--run-param "name=value"` to the `init` command to pre-populate parameters. OSS Metaflow's `init` does not have this option; passing it causes `Error: no such option: --run-param`. In OSS Metaflow, flow parameters are passed to the start step via `METAFLOW_PARAMETER_<NAME>` environment variables, not via `--run-param` in init:
+```bash
+# Wrong (NFLX-only):
+python flow.py init --run-id $RUN_ID --task-id 1 --run-param "alpha=0.9"
+
+# Correct (OSS): set env vars for the start step container instead:
+export METAFLOW_PARAMETER_ALPHA="0.9"
+python flow.py step start --run-id $RUN_ID --task-id 1 ...
+```
+Do not include `--run-param` in the init step command if your extension must work with OSS Metaflow.
 
 **10. `init` command missing `--task-id`** — The Metaflow `init` subcommand requires `--task-id` in OSS Metaflow (some internal forks made it optional). If you generate an init script without `--task-id`, the init step fails with `Error: Missing option '--task-id'`. Fix: always include `--task-id 1` in the init command (the init step always runs as task 1):
 ```bash
