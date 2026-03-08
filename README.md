@@ -9,7 +9,7 @@ Build a correct Metaflow orchestrator the first time — scaffold, declare capab
 
 ## The problem
 
-Every new Metaflow orchestrator hits the same five subtle bugs: run params passed as tuples instead of lists, `--branch` missing from step subprocesses, config env vars absent from containers, retry counts hardcoded to zero, and dotted project names crashing `from_deployment()`. There is no official contract document or compliance test suite — each bug is discovered by running real flows against the scheduler. This kit gives you the contract, the compliance tests, and the scaffold so none of them reach production.
+You want to integrate a new scheduler with Metaflow — Dagster, Temporal, a custom platform, whatever. You know you need to implement a `DeployerImpl`, a `DeployedFlow`, and a `TriggeredRun`. But Metaflow's orchestrator contract is not written down anywhere. There is no spec listing what your deployer must handle, no test suite to run against your implementation, and no scaffold to get you started. You figure it out by reading existing orchestrator code, running real flows, and hitting a handful of non-obvious bugs that every new orchestrator author rediscovers independently — retry counts hardcoded to zero, `--branch` missing from step subprocesses, config env vars absent from containers. This kit is the missing artifact: a written contract, a compliance test suite you can run locally, and a scaffold that pre-fills every requirement so none of them are easy to skip.
 
 ## Quick start
 
