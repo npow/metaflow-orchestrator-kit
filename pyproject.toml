@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "metaflow-orchestrator-kit"
+version = "0.1.0"
+description = "Development kit for building Metaflow orchestrator extensions"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "Apache-2.0" }
+dependencies = ["metaflow", "pytest", "omegaconf"]
+
+[project.optional-dependencies]
+dev = ["pytest-xdist", "pytest-timeout", "pytest-cov"]
+
+[project.scripts]
+metaflow-orchestrator-scaffold = "metaflow_orchestrator_kit.scaffold.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["metaflow_orchestrator_kit*"]
