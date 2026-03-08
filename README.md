@@ -235,7 +235,19 @@ If you still see extension-loading failures, the container's Python may discover
 pip install metaflow requests  # in the step's bash preamble
 ```
 
-**9. Every step including `start` requires `--input-paths`** — Without `--input-paths`, the step subprocess fails with `UnboundLocalError: cannot access local variable 'inputs'`. This is required for every step, not just `for`each splits. The format is `{run_id}/{parent_step}/{parent_task_id}`. The `start` step's parent is the `_parameters` task created by `init`:
+**9. `METAFLOW_DATASTORE_SYSROOT_LOCAL` vs `--datastore-root` use different path formats** — `METAFLOW_DATASTORE_SYSROOT_LOCAL` is the **sysroot** (parent directory, no `.metaflow` suffix). The `--datastore-root` CLI argument to `step` and `init` commands is the **full datastore path** which includes the `.metaflow` subdirectory that LocalStorage appends. Using the same value for both causes steps to write to a double-nested path (`.metaflow/.metaflow`):
+```bash
+# Correct (these are different values):
+export METAFLOW_DATASTORE_SYSROOT_LOCAL='/tmp/mytest'              # no .metaflow
+python3 flow.py step start ... --datastore-root /tmp/mytest/.metaflow  # with .metaflow
+
+# Wrong (do not reuse the same value):
+export METAFLOW_DATASTORE_SYSROOT_LOCAL='/tmp/mytest/.metaflow'  # double .metaflow on read
+python3 flow.py step start ... --datastore-root /tmp/mytest/.metaflow
+```
+At compile time, use `os.environ.get("METAFLOW_DATASTORE_SYSROOT_LOCAL")` for the env var and `sysroot + "/.metaflow"` for the `--datastore-root` argument.
+
+**10. Every step including `start` requires `--input-paths`** — Without `--input-paths`, the step subprocess fails with `UnboundLocalError: cannot access local variable 'inputs'`. This is required for every step, not just `for`each splits. The format is `{run_id}/{parent_step}/{parent_task_id}`. The `start` step's parent is the `_parameters` task created by `init`:
 ```bash
 # start step input (parent is init):
 --input-paths "${run_id}/_parameters/1"
