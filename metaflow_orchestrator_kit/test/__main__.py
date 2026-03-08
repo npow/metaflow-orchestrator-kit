@@ -29,6 +29,99 @@ import sys
 import tempfile
 from typing import List, Optional
 
+try:
+    import requests as _requests
+except ImportError:
+    _requests = None
+
+
+# ---------------------------------------------------------------------------
+# Scheduler pre-flight checks
+# ---------------------------------------------------------------------------
+
+
+def _verify_scheduler_reachable(deploy_args: dict) -> None:
+    """
+    Warn if the scheduler does not respond to a simple HTTP probe.
+
+    This catches the most common failure mode: tests start, every deploy or trigger
+    call times out, and the error messages blame the plugin rather than the missing
+    service.  A one-second check here surfaces the real problem immediately.
+
+    The probe is best-effort: if requests is not installed, or the scheduler uses
+    a non-HTTP protocol, we skip silently.
+    """
+    if _requests is None:
+        return  # requests not installed — skip check
+
+    # Gather candidate host from any of the common key names implementations use.
+    host = (
+        deploy_args.get("host")
+        or deploy_args.get("windmill_host")
+        or deploy_args.get("mage_host")
+        or deploy_args.get("kestra_host")
+        or deploy_args.get("prefect_host")
+        or deploy_args.get("temporal_host")
+        or deploy_args.get("dagster_host")
+        or deploy_args.get("flyte_host")
+    )
+    if not host:
+        return
+
+    # Common health/status probe paths in rough priority order.
+    probe_paths = ["/health", "/api/health", "/api/status", "/api/version", "/healthz"]
+
+    reachable = False
+    last_error = None
+    for path in probe_paths:
+        url = host.rstrip("/") + path
+        try:
+            resp = _requests.get(url, timeout=5)
+            # Any HTTP response (even 404) means TCP connected — the host is up.
+            reachable = True
+            break
+        except Exception as exc:
+            last_error = exc
+
+    if not reachable:
+        print()
+        print("=" * 60)
+        print("WARNING: scheduler at %r may not be reachable." % host)
+        print("         Last probe error: %s" % last_error)
+        print()
+        print("  All tests will fail with connection errors if the scheduler")
+        print("  is not running.  Start it before running this command.")
+        print("=" * 60)
+        print()
+
+
+def _warn_stale_state(scheduler_type: str) -> None:
+    """
+    Warn the user that pre-existing scheduler state can break tests.
+
+    Tests assume a clean scheduler environment: no pre-existing pipelines,
+    deployments, or runs from previous experiments.  If stale state is present,
+    tests fail with confusing errors such as:
+      - trigger() returns a run ID from a previous run
+      - status polling hits a completed run and immediately returns SUCCEEDED
+      - from_deployment() finds the wrong version of a workflow
+
+    The fix is always to wipe the scheduler state before running compliance tests.
+    This is scheduler-specific (e.g. delete all pipelines, reset the DB).
+    """
+    print()
+    print("NOTE: Stale state warning")
+    print(
+        "  If %r has pipelines, deployments, or runs from previous test attempts,"
+        % scheduler_type
+    )
+    print("  tests may fail with confusing errors unrelated to your code.")
+    print("  Fix: wipe all existing pipelines/deployments in your scheduler before")
+    print("  re-running these tests.  This is scheduler-specific — consult your")
+    print("  scheduler's docs for how to reset its state (e.g. drop the DB, call")
+    print("  a delete-all API, or restart the scheduler with an empty data dir).")
+    print()
+
 
 # ---------------------------------------------------------------------------
 # Config file generation
@@ -314,6 +407,11 @@ def main():
         print("Pass --metaflow-src /path/to/metaflow to include basic/config/dag tests.")
         # Remove non-compliance modules if no flows dir
         test_modules = [m for m in test_modules if m == "compliance"]
+
+    # Pre-flight checks — run before writing the config or starting pytest so that
+    # problems are surfaced immediately rather than buried in test output.
+    _warn_stale_state(args.scheduler_type)
+    _verify_scheduler_reachable(deploy_args)
 
     # Write config file
     if args.config_path:

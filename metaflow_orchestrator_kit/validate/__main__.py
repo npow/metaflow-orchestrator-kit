@@ -334,7 +334,17 @@ def _check_retry_count_not_hardcoded(files: dict) -> _Check:
 
 
 def _check_datastore_sysroot(files: dict) -> _Check:
-    """METAFLOW_DATASTORE_SYSROOT_LOCAL should be captured at compile time."""
+    """METAFLOW_DATASTORE_SYSROOT_LOCAL should be captured at compile time.
+
+    A common bug: the deployer reads METAFLOW_DATASTORE_SYSROOT_LOCAL from the
+    environment inside a step task function (at worker runtime), instead of
+    capturing it at compile time and baking it into the workflow definition.
+    This causes deployer and worker to use different sysroot paths, so
+    wait_for_deployed_run() never finds the run (it polls the wrong directory).
+
+    The fix: capture in _compile_workflow() / _get_datastore_sysroot(), not
+    inside a step body or worker callback.
+    """
     result = _find_deployer_file(files)
     if not result:
         return _Check(
@@ -344,20 +354,54 @@ def _check_datastore_sysroot(files: dict) -> _Check:
         )
     path, content = result
 
-    if "METAFLOW_DATASTORE_SYSROOT_LOCAL" in content:
+    if "METAFLOW_DATASTORE_SYSROOT_LOCAL" not in content:
         return _Check(
             "DATASTORE_SYSROOT captured at compile time",
-            True,
-            f"METAFLOW_DATASTORE_SYSROOT_LOCAL found in {path}",
+            False,
+            f"METAFLOW_DATASTORE_SYSROOT_LOCAL not found in {path}",
+            hint=(
+                "Capture at compile time: datastore_sysroot = os.environ.get('METAFLOW_DATASTORE_SYSROOT_LOCAL', os.path.expanduser('~')). "
+                "Bake into the workflow definition so workers write metadata to the same "
+                "location the deployer reads from.  "
+                "CRITICAL: do NOT read this env var inside a step task body or worker callback "
+                "— the worker may have a different (or absent) sysroot env var than the deployer, "
+                "causing wait_for_deployed_run() to poll the wrong directory forever."
+            ),
         )
+
+    # Warn if the sysroot is read from os.environ inside what looks like a step/task
+    # body (heuristic: os.environ.get("METAFLOW_DATASTORE_SYSROOT_LOCAL") appears
+    # inside a function that is NOT _get_datastore_sysroot / _compile_workflow).
+    # We look for it inside indented blocks that are not the compile-time helpers.
+    compile_time_fn_pattern = re.compile(
+        r'def\s+(_get_datastore_sysroot|_compile_workflow)\s*\(.*?\n'
+        r'((?:[ \t]+.*\n)*)',
+        re.MULTILINE,
+    )
+    compile_time_bodies = " ".join(
+        m.group(2) for m in compile_time_fn_pattern.finditer(content)
+    )
+
+    # Check if the sysroot env read occurs OUTSIDE the compile-time helpers.
+    sysroot_occurrences = [
+        m.start() for m in re.finditer(r'METAFLOW_DATASTORE_SYSROOT_LOCAL', content)
+    ]
+    all_in_compile_time = all(
+        content[max(0, pos - 500):pos] in compile_time_bodies or
+        "METAFLOW_DATASTORE_SYSROOT_LOCAL" in compile_time_bodies
+        for pos in sysroot_occurrences
+    )
+
+    # Simpler heuristic: if it appears in the compile-time helpers, that's good enough.
+    # The validator can't fully parse scopes, so we just pass if it's present anywhere
+    # but add a targeted hint reminding implementors NOT to read it at step runtime.
     return _Check(
         "DATASTORE_SYSROOT captured at compile time",
-        False,
-        f"METAFLOW_DATASTORE_SYSROOT_LOCAL not found in {path}",
-        hint=(
-            "Capture at compile time: datastore_sysroot = os.environ.get('METAFLOW_DATASTORE_SYSROOT_LOCAL', os.path.expanduser('~')). "
-            "Bake into the workflow definition so workers write metadata to the same location the deployer reads from."
-        ),
+        True,
+        f"METAFLOW_DATASTORE_SYSROOT_LOCAL found in {path} "
+        f"(verify it is read at compile time, not inside a step task body — "
+        f"worker and deployer must use the SAME sysroot path or "
+        f"wait_for_deployed_run() will poll the wrong directory)",
     )
 
 

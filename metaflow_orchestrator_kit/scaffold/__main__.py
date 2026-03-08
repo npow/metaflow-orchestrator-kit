@@ -468,11 +468,49 @@ def list():
 )
 def trigger(name, run_param, deployer_attribute_file):
     """Trigger a run of a deployed {name} workflow."""
+    import json as _json
+    import requests as _requests
+
     # REQUIRED (Cap.RUN_PARAMS): run_param arrives as a tuple from Click.
     # Convert to list before using:
     run_params = list(run_param)
 
-    # TODO: SCHEDULER API — trigger the workflow named `name` with `run_params`
+    # TODO: SCHEDULER API — trigger the workflow named `name` with `run_params`.
+    # Replace this example request with the real {name} API call:
+    #   resp = _requests.post(f"http://localhost:8080/api/pipelines/{{name}}/trigger", ...)
+    #   resp.raise_for_status()
+    resp = None  # TODO: SCHEDULER API — replace with real request
+
+    # Always log the full response when debugging so you can see the exact key names.
+    # Run with: METAFLOW_DEBUG_DEPLOYER=1 python flow.py {name} trigger ...
+    if resp is not None:
+        try:
+            response_data = resp.json()
+        except Exception:
+            response_data = {{"raw": resp.text}}
+    else:
+        response_data = {{}}
+
+    if os.environ.get("METAFLOW_DEBUG_DEPLOYER"):
+        print(
+            f"[DEBUG] {name} trigger response: {{_json.dumps(response_data, indent=2)}}",
+            file=sys.stderr,
+        )
+
+    # TODO: SCHEDULER API — extract run_id from response_data.
+    # The exact key depends on your scheduler.  Common patterns:
+    #   Kestra:  response_data["id"]                       (raises KeyError if missing — good)
+    #   Prefect: response_data["id"]
+    #   Mage:    response_data["pipeline_run"]["id"]        (nested)
+    #   Windmill:response_data["run_id"]
+    #
+    # IMPORTANT: use direct key access (response_data["id"]) rather than .get("id")
+    # so that a wrong key raises KeyError immediately instead of silently returning None,
+    # which causes confusing failures later (e.g. pathspec "FlowName/None").
+    #
+    # Print the full response first with METAFLOW_DEBUG_DEPLOYER=1 to discover the keys.
+    run_id = None  # TODO: SCHEDULER API — replace with response_data["<key>"]
+
     # After triggering, write a JSON file to deployer_attribute_file with at least:
     #   {{"pathspec": "<FlowName>/<run_id>"}}
     raise NotImplementedError("trigger() not yet implemented")
