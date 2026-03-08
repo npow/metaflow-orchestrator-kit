@@ -206,26 +206,29 @@ class {classname}DeployerImpl(DeployerImpl):
             # REQUIRED: PATH so conda/virtualenv binaries are found.
             "PATH": os.environ.get("PATH", ""),
 
-            # DOCKER WORKERS NOTE: If {name} runs steps inside Docker containers,
+                # DOCKER WORKERS NOTE: If {name} runs steps inside Docker containers,
             # the flow file path and sysroot path are host-local and will NOT exist
             # inside the container unless you mount them via docker-compose volumes.
             #
-            # OPTION A (recommended for production): Use a shared object store
-            # (S3/MinIO) as the datastore and install metaflow in the worker image.
-            # No volume mounts needed.
+            # OPTION A (recommended for production): Build a custom worker Docker
+            # image with metaflow pre-installed.  Use a shared object store (S3/MinIO)
+            # as the datastore.  No volume mounts needed.
             #
             # OPTION B (local devstack only): Add volume mounts to docker-compose:
             #   volumes:
             #     - /Users:/Users   (macOS) or /home:/home (Linux)
             #     - /tmp:/tmp
-            # Then set PYTHONPATH to the OSS metaflow source ONLY — do NOT include
-            # extension packages, or the worker will load host-installed extensions
-            # (e.g. internal Netflix extensions) that fail inside the container:
-            #   "PYTHONPATH": "/path/to/metaflow",  # OSS source only
-            # If metaflow is still not importable, add a pip install to the step preamble:
-            #   "pip install metaflow requests" in the bash script before running the step.
+            # Then set PYTHONPATH to the OSS metaflow source ONLY — do NOT pass
+            # os.environ.get("PYTHONPATH", "") because that may include site-packages
+            # with host-installed private extensions that fail inside the container:
+            #   export PYTHONPATH=/path/to/metaflow  # OSS source only
+            # If metaflow is still not importable (e.g. 'requests' missing), add a
+            # pip install to the step preamble bash script:
+            #   pip3 install --quiet metaflow requests
+            # Note: apt-installed packages do not persist across container restarts;
+            # add them to your custom Dockerfile instead for reproducibility.
             #
-            # Without any fix, steps fail with FileNotFoundError (flow file) or
+            # Without any fix: FileNotFoundError on flow file path, or
             # wait_for_deployed_run() polls forever (sysroot not found).
         }}
 
@@ -300,6 +303,23 @@ class {classname}DeployerImpl(DeployerImpl):
             conda run activates the named environment before launching the
             process, setting PYTHONPATH, sys.executable, and native library
             paths automatically.
+
+        APPROACH C — Docker workers that run bash scripts (Windmill, Prefect):
+            The step command runs inside a Docker container that may not have
+            metaflow installed.  The recommended pattern for the bash preamble
+            of each step script:
+
+                # In the bash script emitted by _compile_workflow():
+                set -e
+                if ! python3 -c "import metaflow" 2>/dev/null; then
+                    pip3 install --quiet metaflow requests
+                fi
+                export METAFLOW_DATASTORE_SYSROOT_LOCAL={datastore_sysroot!r}
+                export METAFLOW_FLOW_CONFIG_VALUE={flow_config_value!r}
+                python3 {flow_file} ...
+
+            This is more robust than relying on PYTHONPATH pointing to a
+            host-mounted source tree, which exposes unintended extensions.
 
             If your orchestrator uses Approach B, replace the cmd construction
             below with:
