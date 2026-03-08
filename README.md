@@ -201,6 +201,24 @@ Every new orchestrator implementation hits the same bugs. The scaffold pre-solve
 
 **7. Extension not auto-discovered (`Deployer` missing `.my_scheduler()`)** — `Deployer(flow_file).my_scheduler()` raises `AttributeError` with no indication why. Metaflow reads `DEPLOYER_IMPL_PROVIDERS_DESC` from `mfextinit_<name>.py`; if it's missing, misnamed, in the wrong directory, or the descriptor is malformed, the deployer is silently not registered. Fix: ensure `mfextinit_<name>.py` lives at `metaflow_extensions/<name>/plugins/` and `DEPLOYER_IMPL_PROVIDERS_DESC = [("<name>", ".<name>.<name>_deployer.<Class>DeployerImpl")]`. Run `python -m metaflow_orchestrator_kit.validate .` to catch this before CI.
 
+**8. Docker-based workers cannot reach the local filesystem** — Schedulers that run workers in Docker containers (Windmill, Prefect, Argo) isolate the worker filesystem from the host. The step command uses the absolute host path to the flow file (e.g. `/Users/me/project/flow.py`), but that path does not exist inside the container. The same applies to `METAFLOW_DATASTORE_SYSROOT_LOCAL`: if the sysroot path is a host-local directory, the worker writes to a different directory than the deployer reads from, so `wait_for_deployed_run()` polls forever. Fix: add volume mounts to your docker-compose for the scheduler service to share `/Users` (or equivalent) and `/tmp` between host and worker container. For local devstack testing, add to your `docker-compose.yml` worker service:
+```yaml
+volumes:
+  - /Users:/Users
+  - /tmp:/tmp
+```
+Also set `PYTHONPATH` inside the worker container if Metaflow is not installed there — point it to the mounted source: `PYTHONPATH=/path/to/metaflow`.
+
+**9. Scheduler auth tokens expire** — If your scheduler issues short-lived auth tokens (Windmill, Kestra), tests that start a long-running deploy+trigger sequence may fail with 401 on the trigger API call because the token used at `create()` time has expired by the time `trigger()` is called. Fix: either use long-lived tokens (service account tokens in Windmill: `Settings > Users & Tokens > Tokens > Add token` with no expiry), or fetch a fresh token at the start of each `trigger()` call rather than caching the token from `create()`.
+
+**10. Scheduler internal indexing delay after workflow creation** — Some schedulers (Mage, Prefect, Windmill) index or cache newly-created pipelines/DAGs asynchronously. If you make a second API call immediately after the creation POST (e.g. creating a schedule, listing runs, or triggering), the scheduler may return 500 or `'NoneType' object has no attribute 'uuid'` because the pipeline is not yet in the cache. Fix: add a short delay between `_create_pipeline()` / `_compile_workflow()` and any subsequent API call that references the newly-created resource. A 1–2 second sleep is enough for most schedulers. If the second call is not strictly required for the trigger to work (e.g. schedule creation for Mage), make it optional and catch failures gracefully:
+```python
+try:
+    schedule_id = _create_api_trigger(client, pipeline_uuid)
+except Exception:
+    schedule_id = None  # non-fatal: trigger works without a registered schedule
+```
+
 ## Capabilities
 
 ### Required — every orchestrator must pass these

@@ -438,6 +438,66 @@ def _check_environment_type(files: dict) -> _Check:
     )
 
 
+def _check_scheduler_api_optional(files: dict) -> _Check:
+    """Secondary scheduler API calls (e.g. schedule creation) must not block trigger().
+
+    A common pattern: after creating a workflow, implementors call a secondary
+    scheduler API (e.g. create a schedule, register a trigger) as part of
+    create() or trigger(). If this secondary call fails (503, timing window where
+    the scheduler hasn't indexed the workflow yet, expired auth token), the entire
+    create/trigger fails even though the underlying execution would have worked.
+
+    The fix: wrap secondary API calls in try/except and treat them as non-fatal.
+    Detect the anti-pattern: secondary API call result used directly without
+    any error handling (e.g. schedule_id = resp.json()["id"] with no try/except).
+    """
+    result = _find_cli_file(files)
+    if not result:
+        return _Check(
+            "secondary scheduler API calls are non-fatal",
+            True,
+            "no CLI file found — skipped",
+        )
+    path, content = result
+
+    # Look for direct key access on a requests response without surrounding try/except.
+    # Heuristic: resp.json()[...] or response[...]["id"] appearing in trigger()
+    # with no try/except block at that indentation level.
+    # A simpler signal: does the file have at least one try/except in a trigger-related context?
+    has_try_except = bool(re.search(r'\btry\b', content) and re.search(r'\bexcept\b', content))
+    has_trigger = bool(re.search(r'def trigger\b', content) or re.search(r'@cli\.command', content))
+
+    # Look for the dangerous pattern: schedule or secondary resource creation
+    # that accesses response keys without any error handling anywhere in the file.
+    has_secondary_call = bool(
+        re.search(r'schedule|pipeline_schedule|api_trigger|register_trigger', content, re.IGNORECASE)
+    )
+
+    if has_secondary_call and not has_try_except:
+        return _Check(
+            "secondary scheduler API calls are non-fatal",
+            False,
+            f"secondary scheduler API calls found in {path} but no try/except error handling",
+            hint=(
+                "Wrap secondary API calls (schedule creation, trigger registration) in "
+                "try/except so they don't block the trigger if the scheduler hasn't indexed "
+                "the workflow yet.  Example:\n"
+                "    try:\n"
+                "        schedule_id = _create_schedule(client, pipeline_id)\n"
+                "    except Exception:\n"
+                "        schedule_id = None  # non-fatal\n"
+                "Schedulers (Mage, Prefect, Windmill) index workflows asynchronously; "
+                "a secondary API call immediately after create() may return 500."
+            ),
+        )
+
+    return _Check(
+        "secondary scheduler API calls are non-fatal",
+        True,
+        f"no unguarded secondary scheduler API calls found in {path}",
+    )
+
+
 def _check_from_deployment_dotted(files: dict) -> _Check:
     """from_deployment must use identifier.split('.')[-1]."""
     result = _find_objects_file(files)
@@ -499,6 +559,7 @@ def validate(directory: str) -> List[_Check]:
         _check_retry_count_not_hardcoded(files),
         _check_datastore_sysroot(files),
         _check_environment_type(files),
+        _check_scheduler_api_optional(files),
         _check_from_deployment_dotted(files),
     ]
     return checks

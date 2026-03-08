@@ -205,6 +205,18 @@ class {classname}DeployerImpl(DeployerImpl):
 
             # REQUIRED: PATH so conda/virtualenv binaries are found.
             "PATH": os.environ.get("PATH", ""),
+
+            # DOCKER WORKERS NOTE: If {name} runs steps inside Docker containers,
+            # the flow file path and sysroot path are host-local and will NOT exist
+            # inside the container unless you mount them via docker-compose volumes.
+            # Add to your docker-compose worker service:
+            #   volumes:
+            #     - /Users:/Users   (or /home:/home on Linux)
+            #     - /tmp:/tmp
+            # Also set PYTHONPATH if Metaflow is not installed in the container:
+            #   "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
+            # Without volume mounts, steps fail with FileNotFoundError (flow file)
+            # or wait_for_deployed_run() polls forever (sysroot not found).
         }}
 
         # TODO: SCHEDULER API — build the actual workflow definition here.
@@ -480,6 +492,12 @@ def trigger(name, run_param, deployer_attribute_file):
     #   resp = _requests.post(f"http://localhost:8080/api/pipelines/{{name}}/trigger", ...)
     #   resp.raise_for_status()
     resp = None  # TODO: SCHEDULER API — replace with real request
+
+    # AUTH TOKEN NOTE: If {name} uses short-lived tokens (e.g. session tokens),
+    # this token may have expired by the time trigger() is called after a long
+    # create() step.  Use a service-account / long-lived token in CI, or
+    # fetch a fresh token here rather than reading from config.
+    # Windmill example: Settings > Users & Tokens > Tokens > Add token (no expiry).
 
     # Always log the full response when debugging so you can see the exact key names.
     # Run with: METAFLOW_DEBUG_DEPLOYER=1 python flow.py {name} trigger ...
