@@ -1,55 +1,74 @@
 # metaflow-orchestrator-kit
 
-Development kit for building Metaflow orchestrator extensions.
+[![CI](https://github.com/npow/metaflow-orchestrator-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/npow/metaflow-orchestrator-kit/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/metaflow-orchestrator-kit)](https://pypi.org/project/metaflow-orchestrator-kit/)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 
-This package gives you three things:
+Build a correct Metaflow orchestrator the first time — scaffold, declare capabilities, and prove compliance.
 
-1. **`OrchestratorCapabilities` (`Cap`)** — an enum of every Metaflow feature an orchestrator can or must support, with plain-English descriptions of each contract requirement.
-2. **Compliance test suite** — parametrized pytest tests that verify your orchestrator implements the contract correctly.  Every test documents *why* the requirement exists, not just what it checks.
-3. **Scaffold tool** — `metaflow-orchestrator-scaffold my_scheduler` generates a complete, annotated skeleton with all contract requirements pre-filled so they are hard to miss.
+## The problem
 
-The design goal: a developer building a new Metaflow orchestrator installs this package, declares their capabilities, runs the compliance tests, and knows exactly what they need to implement.
-
----
+Every new Metaflow orchestrator hits the same five subtle bugs: run params passed as tuples instead of lists, `--branch` missing from step subprocesses, config env vars absent from containers, retry counts hardcoded to zero, and dotted project names crashing `from_deployment()`. There is no official contract document or compliance test suite — each bug is discovered by running real flows against the scheduler. This kit gives you the contract, the compliance tests, and the scaffold so none of them reach production.
 
 ## Quick start
 
-### 1. Install
+```bash
+pip install metaflow-orchestrator-kit
+metaflow-orchestrator-scaffold my_scheduler
+```
+
+Declare what your scheduler supports, then prove it:
+
+```python
+from metaflow_orchestrator_kit import Cap, REQUIRED
+
+SUPPORTED_CAPABILITIES = REQUIRED | {Cap.NESTED_FOREACH, Cap.SCHEDULE}
+```
+
+```bash
+pytest metaflow_orchestrator_kit/compliance/ \
+    --ux-config=path/to/ux_test_config.yaml \
+    --only-backend my_scheduler -v
+```
+
+## Install
 
 ```bash
 pip install metaflow-orchestrator-kit
+# with dev dependencies:
+pip install "metaflow-orchestrator-kit[dev]"
 ```
 
-### 2. Scaffold a new orchestrator
+## Usage
+
+### Scaffold a new orchestrator
 
 ```bash
 metaflow-orchestrator-scaffold my_scheduler
-# or: python -m metaflow_orchestrator_kit.scaffold my_scheduler
+# equivalent: python -m metaflow_orchestrator_kit.scaffold my_scheduler
 ```
 
-This writes four files:
+Generates four files:
 
 ```
-my_scheduler_deployer.py      DeployerImpl subclass with all required TODO annotations
+my_scheduler_deployer.py      DeployerImpl subclass — all required TODOs annotated
 my_scheduler_objects.py       DeployedFlow / TriggeredRun subclasses
 my_scheduler_cli.py           CLI entry-point group (register in metaflow/plugins/__init__.py)
 ux-tests-my_scheduler.yml     GitHub Actions workflow skeleton
 ```
 
-### 3. Declare your capabilities
-
-In your deployer module:
+### Declare capabilities
 
 ```python
 from metaflow_orchestrator_kit import Cap, REQUIRED
 
-# Start with all REQUIRED capabilities and add optional ones you implement.
+# REQUIRED is the minimum set every orchestrator must pass.
+# Add optional capabilities your scheduler actually supports.
 SUPPORTED_CAPABILITIES = REQUIRED | {Cap.NESTED_FOREACH, Cap.SCHEDULE}
 ```
 
-### 4. Run the compliance tests
-
-Point the suite at your `ux_test_config.yaml`:
+### Run compliance tests
 
 ```bash
 pytest metaflow_orchestrator_kit/compliance/ \
@@ -58,70 +77,9 @@ pytest metaflow_orchestrator_kit/compliance/ \
     -v
 ```
 
-REQUIRED capabilities fail if the orchestrator does not implement them correctly.
-OPTIONAL capabilities are skipped if the scheduler is not in the supported set.
+REQUIRED capabilities fail if unimplemented. OPTIONAL capabilities skip if not in the supported set.
 
----
-
-## Capabilities reference
-
-### REQUIRED — every orchestrator must implement these
-
-| Capability | What it means |
-|---|---|
-| `Cap.LINEAR_DAG` | start → one or more steps → end |
-| `Cap.BRANCHING` | static split/join: steps in parallel branches, merged at a join step |
-| `Cap.FOREACH` | dynamic fan-out: foreach produces N parallel tasks at runtime |
-| `Cap.RETRY` | `@retry` with a real attempt count derived from the scheduler's native retry counter (not hardcoded to 0) |
-| `Cap.CATCH` | `@catch` decorator: catch a step exception and continue the flow |
-| `Cap.TIMEOUT` | `@timeout` decorator: abort a step that exceeds the time limit |
-| `Cap.RESOURCES` | `@resources` passthrough: CPU/memory hints forwarded to the scheduler |
-| `Cap.PROJECT_BRANCH` | `--branch` forwarded to ALL step subprocesses, not just the start step |
-| `Cap.CONFIG_EXPR` | `METAFLOW_FLOW_CONFIG_VALUE` injected into every container/subprocess so `@config` and `@project` work at task runtime |
-| `Cap.RUN_PARAMS` | `trigger()` run params must be a list, not a tuple (Click returns tuples; passing a tuple causes TypeError) |
-| `Cap.FROM_DEPLOYMENT` | `from_deployment(identifier)` must handle dotted names (`project.branch.FlowName`); only the last component is the Python class name |
-
-### OPTIONAL — implement or explicitly declare unsupported
-
-| Capability | What it means |
-|---|---|
-| `Cap.NESTED_FOREACH` | foreach inside foreach |
-| `Cap.CONDA` | `@conda` environment creation at task runtime |
-| `Cap.RESUME` | `ORIGIN_RUN_ID` resume: re-run from a previously failed step |
-| `Cap.SCHEDULE` | `@schedule` cron trigger |
-
----
-
-## The five bugs every new orchestrator gets wrong
-
-These are real bugs that have appeared in multiple orchestrator implementations.
-The compliance suite has a dedicated test for each one.
-
-**1. `run_params` tuple vs list (`Cap.RUN_PARAMS`)**
-
-Click's multi-value options return tuples. If the orchestrator passes `run_params` directly to `trigger()` without converting, passing two or more params causes a `TypeError` inside the scheduler's client library. Fix: `run_params = list(run_params) if run_params else []`.
-
-**2. `--branch` not forwarded to step subprocesses (`Cap.PROJECT_BRANCH`)**
-
-`@project` reads `current.branch_name` from the `--branch` CLI flag at step runtime. Orchestrators that compile a step command but omit `--branch` produce an empty branch in all step tasks. Fix: include `--branch <branch>` in every step command the scheduler launches.
-
-**3. `METAFLOW_FLOW_CONFIG_VALUE` missing from container env (`Cap.CONFIG_EXPR`)**
-
-`@config` and `@project` use this env var to reconstruct the config dict at task runtime. Without it, tasks run with empty/default config and `@project` names are wrong. Fix: at compile time, read `flow._flow_state[FlowStateItems.CONFIGS]` and JSON-serialize it into the container environment.
-
-**4. `retry_count` hardcoded to 0 (`Cap.RETRY`)**
-
-Metaflow's `@retry` uses the attempt number to decide whether to retry. When hardcoded, the flow always sees attempt=0 and never retries. Fix: derive `retry_count` from the scheduler's native counter (`AWS_BATCH_JOB_ATTEMPT`, Kubernetes `restartCount`, Airflow `try_number - 1`, etc.).
-
-**5. `from_deployment()` fails on dotted names (`Cap.FROM_DEPLOYMENT`)**
-
-DAG IDs for `@project`-decorated flows are dotted: `project.branch.FlowName`. Using the full dotted string as a Python class name raises `SyntaxError`. Fix: `flow_name = identifier.split(".")[-1]`.
-
----
-
-## Wiring compliance tests into an existing orchestrator's CI
-
-Add `metaflow-orchestrator-kit` as a test dependency, then in your CI workflow:
+### Wire compliance into CI
 
 ```yaml
 - name: Run compliance tests
@@ -132,11 +90,52 @@ Add `metaflow-orchestrator-kit` as a test dependency, then in your CI workflow:
       -v
 ```
 
-The suite reads the same `ux_test_config.yaml` format used by Metaflow's own UX tests, so no additional config is required if you already have that file.
+The suite reads the same `ux_test_config.yaml` format used by Metaflow's own UX tests, so no additional config is needed if you already have that file.
 
-For backends that do not support a particular optional capability, add them to the `unsupported_schedulers` dict inside `test_nested_foreach_or_skip` (or contribute a PR to this repo).
+## How it works
 
----
+`OrchestratorCapabilities` (`Cap`) is an enum of every Metaflow feature an orchestrator can or must support. The compliance suite runs one parametrized pytest test per capability against a live backend. Required capabilities fail hard; optional ones skip if the scheduler is not in the supported set. The scaffold generates a fully annotated skeleton with every contract requirement pre-filled so they're hard to miss.
+
+## Capabilities
+
+### Required — every orchestrator must pass these
+
+| Capability | What it means |
+|---|---|
+| `Cap.LINEAR_DAG` | start → one or more steps → end |
+| `Cap.BRANCHING` | static split/join: parallel branches merged at a join step |
+| `Cap.FOREACH` | dynamic fan-out: `foreach` produces N tasks at runtime |
+| `Cap.RETRY` | real attempt count from scheduler's native counter (not hardcoded 0) |
+| `Cap.CATCH` | `@catch` decorator: catch step exception and continue the flow |
+| `Cap.TIMEOUT` | `@timeout` decorator: abort a step that exceeds the time limit |
+| `Cap.RESOURCES` | `@resources` passthrough: CPU/memory hints forwarded to scheduler |
+| `Cap.PROJECT_BRANCH` | `--branch` forwarded to every step subprocess, not just start |
+| `Cap.CONFIG_EXPR` | `METAFLOW_FLOW_CONFIG_VALUE` injected into every container/subprocess |
+| `Cap.RUN_PARAMS` | `trigger()` run params as list, not tuple |
+| `Cap.FROM_DEPLOYMENT` | `from_deployment(identifier)` handles dotted names (`project.branch.FlowName`) |
+
+### Optional — implement or explicitly declare unsupported
+
+| Capability | What it means |
+|---|---|
+| `Cap.NESTED_FOREACH` | `foreach` inside `foreach` |
+| `Cap.CONDA` | `@conda` environment creation at task runtime |
+| `Cap.RESUME` | `ORIGIN_RUN_ID` resume: re-run from a previously failed step |
+| `Cap.SCHEDULE` | `@schedule` cron trigger |
+
+## The five bugs every new orchestrator gets wrong
+
+Each compliance test documents *why* the requirement exists. Here are the bugs they catch:
+
+**1. `run_params` tuple vs list (`Cap.RUN_PARAMS`)** — Click's multi-value options return tuples. Passing a tuple to `trigger()` causes `TypeError` when two or more params are given. Fix: `run_params = list(run_params) if run_params else []`.
+
+**2. `--branch` not forwarded to step subprocesses (`Cap.PROJECT_BRANCH`)** — `@project` reads `current.branch_name` from the `--branch` flag at step runtime. Without it, all step tasks produce an empty branch name. Fix: include `--branch <branch>` in every step command the scheduler launches.
+
+**3. `METAFLOW_FLOW_CONFIG_VALUE` missing from container env (`Cap.CONFIG_EXPR`)** — `@config` and `@project` use this env var to reconstruct the config dict at task runtime. Without it, tasks run with empty config. Fix: read `flow._flow_state[FlowStateItems.CONFIGS]` at compile time and JSON-serialize it into the container environment.
+
+**4. `retry_count` hardcoded to 0 (`Cap.RETRY`)** — Metaflow's `@retry` uses the attempt number to decide whether to retry. Hardcoding 0 means the flow always sees attempt 0 and never retries. Fix: derive from the scheduler's native counter (`AWS_BATCH_JOB_ATTEMPT`, Kubernetes `restartCount`, Airflow `try_number - 1`, etc.).
+
+**5. `from_deployment()` fails on dotted names (`Cap.FROM_DEPLOYMENT`)** — DAG IDs for `@project`-decorated flows are dotted: `project.branch.FlowName`. Using the full string as a Python class name raises `SyntaxError`. Fix: `flow_name = identifier.split(".")[-1]`.
 
 ## Example `ux_test_config.yaml`
 
@@ -150,8 +149,15 @@ backends:
     enabled: true
 ```
 
----
+## Development
+
+```bash
+git clone https://github.com/npow/metaflow-orchestrator-kit
+cd metaflow-orchestrator-kit
+pip install -e ".[dev]"
+pytest
+```
 
 ## License
 
-Apache 2.0
+[Apache 2.0](LICENSE)
