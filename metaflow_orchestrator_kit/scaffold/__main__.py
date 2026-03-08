@@ -378,12 +378,20 @@ class {classname}DeployerImpl(DeployerImpl):
         # only valid as an argument to "step", "run", "init", etc.
         # Wrong:  python flow.py --tag foo step start ...
         # Correct: python flow.py step start --tag foo ...
+        #
+        # IMPORTANT: --input-paths is REQUIRED for every step including "start".
+        # Without it, steps fail with:
+        #   UnboundLocalError: cannot access local variable 'inputs'
+        # Input path format: "{run_id}/{parent_step}/{parent_task_id}"
+        # For the start step (parent is init):  "{run_id}/_parameters/1"
+        # For other steps (parent is previous): "{run_id}/{parent_step}/1"
+        # For join steps (multiple parents):    "A/{s1}/1,A/{s2}/1,..."  (comma-separated)
         cmd += [
             "step", step_name,
             "--run-id", run_id,
             "--task-id", task_id,
             "--retry-count", str(retry_count),  # TODO: SCHEDULER API — replace 0 with scheduler attempt
-            "--input-paths", input_paths,
+            "--input-paths", input_paths,  # REQUIRED: see format notes above
             # TODO: SCHEDULER API — add --tag options here (after "step <name>"), not before:
             #   for tag in tags:
             #       cmd += ["--tag", tag]

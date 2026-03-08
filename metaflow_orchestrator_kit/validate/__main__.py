@@ -438,6 +438,61 @@ def _check_environment_type(files: dict) -> _Check:
     )
 
 
+def _check_input_paths_present(files: dict) -> _Check:
+    """Every step command including start must include --input-paths.
+
+    Without --input-paths, step execution fails with:
+        UnboundLocalError: cannot access local variable 'inputs'
+
+    The start step's input path is the _parameters task created by init:
+        {run_id}/_parameters/1
+
+    Other steps use the parent step's output:
+        {run_id}/{parent_step}/{task_id}
+
+    Detection: look for _build_step_command or step command construction
+    without --input-paths in the arguments.
+    """
+    all_content = "\n".join(files.values())
+
+    # Check if --input-paths is referenced at all in the implementation.
+    has_input_paths = bool(
+        re.search(r'"--input-paths"', all_content) or
+        re.search(r"'--input-paths'", all_content)
+    )
+    if has_input_paths:
+        return _Check(
+            "--input-paths in step commands",
+            True,
+            "--input-paths found in step command construction",
+        )
+
+    # Check if there's step command construction without --input-paths.
+    has_step_cmd = bool(
+        re.search(r'"step"', all_content) and
+        re.search(r'"--run-id"', all_content)
+    )
+    if has_step_cmd:
+        return _Check(
+            "--input-paths in step commands",
+            False,
+            "step command construction found with --run-id but no --input-paths",
+            hint=(
+                "Add --input-paths to every step command including start.  Without it, "
+                "steps fail with: UnboundLocalError: cannot access local variable 'inputs'.  "
+                "start step: --input-paths {run_id}/_parameters/1  "
+                "other steps: --input-paths {run_id}/{parent_step}/{task_id}  "
+                "join steps: --input-paths {run_id}/a/1,{run_id}/b/1  (comma-separated)"
+            ),
+        )
+
+    return _Check(
+        "--input-paths in step commands",
+        True,
+        "no step command construction found — skipped",
+    )
+
+
 def _check_no_run_param_in_init(files: dict) -> _Check:
     """init command must not include --run-param (NFLX-only flag).
 
@@ -754,6 +809,7 @@ def validate(directory: str) -> List[_Check]:
         _check_retry_count_not_hardcoded(files),
         _check_datastore_sysroot(files),
         _check_environment_type(files),
+        _check_input_paths_present(files),
         _check_no_run_param_in_init(files),
         _check_init_has_task_id(files),
         _check_tag_after_subcommand(files),

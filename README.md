@@ -235,7 +235,19 @@ If you still see extension-loading failures, the container's Python may discover
 pip install metaflow requests  # in the step's bash preamble
 ```
 
-**9. `--run-param` is not an OSS Metaflow init option; use `METAFLOW_PARAMETER_<NAME>` env vars instead** — Some internal Metaflow forks added `--run-param "name=value"` to the `init` command to pre-populate parameters. OSS Metaflow's `init` does not have this option; passing it causes `Error: no such option: --run-param`. In OSS Metaflow, flow parameters are passed to the start step via `METAFLOW_PARAMETER_<NAME>` environment variables, not via `--run-param` in init:
+**9. Every step including `start` requires `--input-paths`** — Without `--input-paths`, the step subprocess fails with `UnboundLocalError: cannot access local variable 'inputs'`. This is required for every step, not just `for`each splits. The format is `{run_id}/{parent_step}/{parent_task_id}`. The `start` step's parent is the `_parameters` task created by `init`:
+```bash
+# start step input (parent is init):
+--input-paths "${run_id}/_parameters/1"
+
+# other steps (parent is previous step, task_id 1):
+--input-paths "${run_id}/{parent_step}/1"
+
+# join steps (multiple parents, comma-separated):
+--input-paths "${run_id}/branch_a/1,${run_id}/branch_b/1"
+```
+
+**10. `--run-param` is not an OSS Metaflow init option; use `METAFLOW_PARAMETER_<NAME>` env vars instead** — Some internal Metaflow forks added `--run-param "name=value"` to the `init` command to pre-populate parameters. OSS Metaflow's `init` does not have this option; passing it causes `Error: no such option: --run-param`. In OSS Metaflow, flow parameters are passed to the start step via `METAFLOW_PARAMETER_<NAME>` environment variables, not via `--run-param` in init:
 ```bash
 # Wrong (NFLX-only):
 python flow.py init --run-id $RUN_ID --task-id 1 --run-param "alpha=0.9"
