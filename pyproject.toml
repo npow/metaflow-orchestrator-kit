@@ -16,6 +16,8 @@ dev = ["pytest-xdist", "pytest-timeout", "pytest-cov"]
 
 [project.scripts]
 metaflow-orchestrator-scaffold = "metaflow_orchestrator_kit.scaffold.__main__:main"
+metaflow-orchestrator-validate = "metaflow_orchestrator_kit.validate.__main__:main"
+metaflow-orchestrator-test = "metaflow_orchestrator_kit.test.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

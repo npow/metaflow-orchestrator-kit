@@ -10,13 +10,15 @@ Usage:
     metaflow-orchestrator-scaffold my_scheduler [output_dir]
 
 This creates:
-    ./my_scheduler_deployer.py      DeployerImpl subclass
-    ./my_scheduler_objects.py       DeployedFlow / TriggeredRun subclasses
-    ./my_scheduler_cli.py           CLI entry-point group
-    ./ux-tests-my_scheduler.yml     GitHub Actions workflow skeleton
+    ./<name>/
+        <name>_deployer.py      DeployerImpl subclass
+        <name>_objects.py       DeployedFlow / TriggeredRun subclasses
+        <name>_cli.py           CLI entry-point group
+        mfextinit_<name>.py     Extension registration
+        ux-tests-<name>.yml     GitHub Actions workflow skeleton
 
 The generated files compile without modification.  Replace every
-TODO / FIXME comment with real implementation code.
+# TODO: SCHEDULER API comment with real scheduler-specific code.
 
 Each generated file references OrchestratorCapabilities (Cap) so you can
 cross-check your implementation against the compliance test suite:
@@ -26,7 +28,7 @@ cross-check your implementation against the compliance test suite:
     SUPPORTED_CAPABILITIES = REQUIRED | {Cap.NESTED_FOREACH}
 
     # Then run:
-    pytest metaflow_orchestrator_kit/compliance/ --ux-config=ux_test_config.yaml
+    python -m metaflow_orchestrator_kit.test --scheduler-type my_scheduler
 """
 
 import os
@@ -75,36 +77,65 @@ See metaflow_orchestrator_kit.capabilities for the full list.
 
 import json
 import os
+import sys
 from typing import ClassVar, Dict, List, Optional, Type
 
 from metaflow.runner.deployer_impl import DeployerImpl
 
 # REQUIRED: declare which capabilities this orchestrator supports.
-# Import and update SUPPORTED_CAPABILITIES before submitting for compliance testing.
 from metaflow_orchestrator_kit import Cap, REQUIRED
 
 SUPPORTED_CAPABILITIES = REQUIRED  # TODO: add optional caps you implement
 
 
 # ---------------------------------------------------------------------------
-# REQUIRED environment variables for Metaflow steps running inside containers.
-# Every container the scheduler launches MUST have these set.
+# Compile-time helpers — called when create() is invoked, NOT at step runtime.
 # ---------------------------------------------------------------------------
-REQUIRED_ENV_VARS = {{
-    # REQUIRED (Cap.CONFIG_EXPR): serialized config dict injected at deploy time.
-    # Extract from flow._flow_state[FlowStateItems.CONFIGS] and JSON-serialize.
-    # Without this, tasks run with empty/default config and @project name is wrong.
-    "METAFLOW_FLOW_CONFIG_VALUE": "",  # TODO: populate from flow state at compile time
 
-    # REQUIRED: Metaflow metadata service URL reachable from inside the container.
-    "METAFLOW_SERVICE_URL": os.environ.get("METAFLOW_SERVICE_URL", ""),
 
-    # REQUIRED: Internal URL used by step subprocesses (may differ from external URL).
-    "METAFLOW_SERVICE_INTERNAL_URL": os.environ.get(
-        "METAFLOW_SERVICE_INTERNAL_URL",
-        os.environ.get("METAFLOW_SERVICE_URL", ""),
-    ),
-}}
+def _get_flow_config_value(flow) -> Optional[str]:
+    """
+    Extract the serialized config dict from the flow at compile time.
+
+    REQUIRED (Cap.CONFIG_EXPR): Bake this into the workflow definition and inject
+    as METAFLOW_FLOW_CONFIG_VALUE into every step subprocess env.
+    Without it, @config and @project decorators use empty/default config at
+    task runtime and current.branch_name is wrong.
+    """
+    try:
+        from metaflow.flowspec import FlowStateItems
+        flow_configs = flow._flow_state[FlowStateItems.CONFIGS]
+        config_env = {{
+            name: value
+            for name, (value, _is_plain) in flow_configs.items()
+            if value is not None
+        }}
+        if config_env:
+            return json.dumps(config_env)
+    except Exception:
+        pass
+    return None
+
+
+def _get_datastore_sysroot() -> str:
+    """
+    Capture METAFLOW_DATASTORE_SYSROOT_LOCAL at compile (deploy) time.
+
+    REQUIRED: Bake this into the workflow so workers write metadata to the
+    same location the deployer reads from, even when the worker starts with
+    a different (or absent) sysroot env var.
+    """
+    return os.environ.get("METAFLOW_DATASTORE_SYSROOT_LOCAL", os.path.expanduser("~"))
+
+
+def _get_environment_type(environment) -> str:
+    """
+    Extract the environment type string from the Metaflow environment object.
+
+    REQUIRED for @conda: pass --environment conda (or local) to every step
+    subprocess so the correct Python interpreter is used.
+    """
+    return getattr(environment, "TYPE", "local")
 
 
 class {classname}DeployerImpl(DeployerImpl):
@@ -118,19 +149,16 @@ class {classname}DeployerImpl(DeployerImpl):
     TYPE: ClassVar[Optional[str]] = "{name}"
 
     def __init__(self, deployer_kwargs: Dict, **kwargs):
-        # NOTE: deployer_kwargs is passed by the Deployer metaclass when you call
-        #   Deployer(flow_file).{name}(host="...", namespace="...")
-        # It contains the keyword arguments passed to the .{name}() call.
-        # Store it before calling super().__init__ so deployer_kwargs property works.
+        # deployer_kwargs contains keyword arguments from Deployer(flow_file).{name}(...)
+        # Store it before calling super().__init__ so the property works.
         self._deployer_kwargs = deployer_kwargs
         super().__init__(**kwargs)
-        # TODO: extract {name}-specific options from deployer_kwargs here, e.g.:
+        # TODO: SCHEDULER API — extract {name}-specific options from deployer_kwargs, e.g.:
         #   self.host = deployer_kwargs.get("host", "http://localhost:8080")
+        #   self.namespace = deployer_kwargs.get("namespace", "default")
 
     @property
     def deployer_kwargs(self) -> Dict:
-        # Return the kwargs dict that maps to the {name} CLI group options.
-        # These are forwarded to the `python flow.py {name} create ...` command.
         return self._deployer_kwargs
 
     @staticmethod
@@ -141,48 +169,148 @@ class {classname}DeployerImpl(DeployerImpl):
     def create(self, **kwargs):
         return self._create(self.deployed_flow_type(), **kwargs)
 
+    def _compile_workflow(self, flow, graph, environment, **kwargs) -> dict:
+        """
+        Compile the flow into a {name} workflow definition (JSON/YAML/etc).
+
+        Called by create() with the loaded flow objects.  All compile-time
+        constants MUST be captured here, NOT at step execution time.
+        """
+        # Capture compile-time constants — baked into the workflow definition.
+        flow_config_value = _get_flow_config_value(flow)
+        datastore_sysroot = _get_datastore_sysroot()
+        environment_type = _get_environment_type(environment)
+        flow_file = self.flow_file
+        flow_name = flow.__class__.__name__
+
+        # Extract @project branch if set
+        branch = self._deployer_kwargs.get("branch") or None
+
+        # Build the required environment for every step subprocess.
+        # ALL of these must be present in every step container/process.
+        required_env = {{
+            # REQUIRED (Cap.CONFIG_EXPR): propagate config to step subprocesses.
+            # Without this, @config/@project decorators use empty/default values.
+            "METAFLOW_FLOW_CONFIG_VALUE": flow_config_value or "",
+
+            # REQUIRED: sysroot pinned at compile time.
+            "METAFLOW_DATASTORE_SYSROOT_LOCAL": datastore_sysroot,
+
+            # REQUIRED: Metaflow metadata service URL reachable from the worker.
+            "METAFLOW_SERVICE_URL": os.environ.get("METAFLOW_SERVICE_URL", ""),
+            "METAFLOW_SERVICE_INTERNAL_URL": os.environ.get(
+                "METAFLOW_SERVICE_INTERNAL_URL",
+                os.environ.get("METAFLOW_SERVICE_URL", ""),
+            ),
+
+            # REQUIRED: PATH so conda/virtualenv binaries are found.
+            "PATH": os.environ.get("PATH", ""),
+        }}
+
+        # TODO: SCHEDULER API — build the actual workflow definition here.
+        # The workflow must encode:
+        #   1. The DAG structure (from `graph`)
+        #   2. For each step: the command (see _build_step_command below)
+        #   3. required_env injected into every step container/process env
+        #   4. branch stored so it can be passed to each step command
+
+        return {{
+            "flow_name": flow_name,
+            "flow_file": flow_file,
+            "environment_type": environment_type,
+            "datastore_sysroot": datastore_sysroot,
+            "flow_config_value": flow_config_value,
+            "branch": branch,
+            "required_env": required_env,
+            # TODO: SCHEDULER API — add scheduler-specific fields
+        }}
+
     def _build_step_command(
         self,
         step_name: str,
         run_id: str,
         task_id: str,
+        input_paths: str,
         branch: Optional[str] = None,
         retry_count: int = 0,  # REQUIRED (Cap.RETRY): derive from scheduler attempt
+        environment_type: str = "local",
+        flow_file: Optional[str] = None,
     ) -> List[str]:
         """
-        Build the command list to execute one step.
+        Build the command list to execute one Metaflow step.
 
         REQUIRED (Cap.PROJECT_BRANCH):
             --branch MUST be included when branch is not None.
             @project reads branch_name from --branch at step runtime.
-            Omitting --branch causes current.branch_name to be empty in all
-            step tasks.
+            Omitting --branch causes current.branch_name to be empty.
 
         REQUIRED (Cap.RETRY):
-            retry_count MUST come from the scheduler\'s native attempt counter.
-            DO NOT leave the default value of 0.
+            retry_count MUST come from the scheduler native attempt counter.
+            DO NOT leave retry_count=0.
+            Examples by scheduler:
+              AWS Batch:   int(os.environ.get("AWS_BATCH_JOB_ATTEMPT", "0"))
+              Kubernetes:  from pod annotation or restart count
+              Airflow:     context["ti"].try_number - 1
+              Prefect:     ctx.task_run.run_count - 1
+
+        REQUIRED (environment_type):
+            Pass --environment so the correct Python is used for @conda flows.
+
+        OPTIONAL (Cap.CONDA) — two approaches depending on executor type:
+
+        APPROACH A — subprocess-based orchestrators (standard):
+            Pass --environment conda (or whatever environment_type is).
+            Metaflow\'s built-in task runner calls conda_decorator.runtime_init()
+            automatically when the step subprocess starts.  runtime_init()
+            extracts the code package into a temp dir and adds it to PYTHONPATH.
+            No additional work needed.  This is what the code below does.
+
+        APPROACH B — in-process executors (Dagster execute_job, Windmill sync,
+            Mage, or any orchestrator that runs steps without re-entering the
+            Metaflow subprocess runtime):
+            runtime_init() is NEVER called, so:
+              - _metaflow_home is None
+              - The code package is never extracted
+              - conda-installed packages are NOT on PYTHONPATH
+              - Steps fail with ModuleNotFoundError for any conda package
+
+            FIX: use "conda run -n <env_name>" to wrap the step command.
+            conda run activates the named environment before launching the
+            process, setting PYTHONPATH, sys.executable, and native library
+            paths automatically.
+
+            If your orchestrator uses Approach B, replace the cmd construction
+            below with:
+                if environment_type == "conda" and conda_env_name:
+                    cmd = [
+                        "conda", "run", "--no-capture-output",
+                        "-n", conda_env_name,
+                        "python",
+                    ]
+                else:
+                    cmd = [sys.executable]
+
+            See: metaflow/plugins/pypi/conda_decorator.py CondaStepDecorator.runtime_init()
         """
+        flow_file = flow_file or self.flow_file
         cmd = [
-            "python",
-            self.flow_file,
-            "--quiet",
-            "--metadata",
-            "service",
+            sys.executable, flow_file,
+            "--no-pylint",
+            "--environment", environment_type,
+            "--metadata", "service",
         ]
 
         if branch:
-            # REQUIRED (Cap.PROJECT_BRANCH): forward --branch to every step subprocess
+            # REQUIRED (Cap.PROJECT_BRANCH): DO NOT REMOVE — forward --branch to
+            # every step subprocess so @project reads the correct branch_name.
             cmd += ["--branch", branch]
 
         cmd += [
-            "step",
-            step_name,
-            "--run-id",
-            run_id,
-            "--task-id",
-            task_id,
-            "--retry-count",
-            str(retry_count),  # TODO (Cap.RETRY): replace with scheduler-native attempt
+            "step", step_name,
+            "--run-id", run_id,
+            "--task-id", task_id,
+            "--retry-count", str(retry_count),  # TODO: SCHEDULER API — replace 0 with scheduler attempt
+            "--input-paths", input_paths,
         ]
 
         return cmd
@@ -200,7 +328,8 @@ _OBJECTS_TEMPLATE = '''\
 Generated by: python -m metaflow_orchestrator_kit.scaffold {name}
 """
 
-from typing import Any, Dict, List, Optional
+import os
+from typing import Any, ClassVar, Dict, List, Optional
 
 from metaflow.runner.deployer import DeployedFlow, TriggeredRun
 
@@ -215,18 +344,22 @@ class {classname}TriggeredRun(TriggeredRun):
 
         MUST return one of: None, "RUNNING", "SUCCEEDED", "FAILED", "TIMED_OUT",
         "ABORTED" (case-insensitive check in wait_for_deployed_run).
+
+        Return None when the run has not started yet.
         """
-        # TODO: query {name} for the current execution status
+        # TODO: SCHEDULER API — query {name} for the current execution status
         raise NotImplementedError
 
     def terminate(self, **kwargs) -> bool:
-        """Terminate the running execution."""
-        # TODO: call {name} API to stop the execution
+        """Terminate the running execution. Return True if successful."""
+        # TODO: SCHEDULER API — call {name} API to stop the execution
         raise NotImplementedError
 
 
 class {classname}DeployedFlow(DeployedFlow):
     """Represents a deployed {name} workflow (analogous to a DAG or state machine)."""
+
+    TYPE: ClassVar[Optional[str]] = "{name}"
 
     def trigger(
         self,
@@ -241,10 +374,15 @@ class {classname}DeployedFlow(DeployedFlow):
             run_params = list(run_params) if run_params else []
         Passing a tuple raises TypeError inside most scheduler client libraries.
         """
-        # REQUIRED (Cap.RUN_PARAMS): must be list, not tuple
+        # REQUIRED (Cap.RUN_PARAMS): must be list, not tuple — DO NOT REMOVE
         run_params = list(run_params) if run_params else []
 
-        # TODO: call {name} API to start a new execution, forwarding run_params
+        # TODO: SCHEDULER API — call {name} API to start a new execution.
+        # Steps to complete:
+        #   1. Generate a Metaflow run_id (e.g. "{name}-" + str(uuid.uuid4())[:12])
+        #   2. Trigger the {name} execution, forwarding run_params as flow parameters
+        #   3. Return a {classname}TriggeredRun with the pathspec set:
+        #        pathspec = f"{{self.deployer.flow_name}}/{{run_id}}"
         raise NotImplementedError
 
     @classmethod
@@ -258,10 +396,11 @@ class {classname}DeployedFlow(DeployedFlow):
                 flow_name = identifier.split(".")[-1]
             Using the full dotted string as a class name raises SyntaxError.
         """
-        # REQUIRED (Cap.FROM_DEPLOYMENT): handle dotted names
+        # REQUIRED (Cap.FROM_DEPLOYMENT): handle dotted names — DO NOT REMOVE
         flow_name = identifier.split(".")[-1]
 
-        # TODO: look up the workflow and return a {classname}DeployedFlow
+        # TODO: SCHEDULER API — look up the {name} workflow by identifier
+        # and return a {classname}DeployedFlow instance.
         raise NotImplementedError
 '''
 
@@ -276,8 +415,8 @@ _CLI_TEMPLATE = '''\
 
 Generated by: python -m metaflow_orchestrator_kit.scaffold {name}
 
-Register this group in metaflow/plugins/__init__.py (DEPLOYER_PACKAGES_TRIE or
-equivalent) so that `python flow.py {name} ...` works.
+This group is registered via mfextinit_{name}.py so that
+`python flow.py {name} ...` works after the extension is installed.
 """
 
 import click
@@ -298,9 +437,12 @@ def cli():
 )
 def create(tags, deployer_attribute_file):
     """Deploy the flow to {name}."""
-    # TODO: compile workflow definition and submit to {name}
-    # After successful deployment, write a JSON file to deployer_attribute_file
-    # with at least: {{"name": "<workflow_id>", "flow_name": "<FlowClass>"}}
+    # REQUIRED: after successful deployment, write a JSON file to
+    # deployer_attribute_file with at least:
+    #   {{"name": "<workflow_id>", "flow_name": "<FlowClass>"}}
+    # This is how the Deployer API learns the deployed workflow name.
+    #
+    # TODO: SCHEDULER API — compile workflow definition and submit to {name}
     raise NotImplementedError("create() not yet implemented")
 
 
@@ -314,6 +456,26 @@ def delete():
 def list():
     """List {name} deployments for this flow."""
     raise NotImplementedError("list() not yet implemented")
+
+
+@cli.command()
+@click.option("--name", required=True, help="Deployment name to trigger.")
+@click.option("--run-param", multiple=True, help="Flow parameter as key=value.")
+@click.option(
+    "--deployer-attribute-file",
+    default=None,
+    help="Internal: path to write trigger attributes JSON.",
+)
+def trigger(name, run_param, deployer_attribute_file):
+    """Trigger a run of a deployed {name} workflow."""
+    # REQUIRED (Cap.RUN_PARAMS): run_param arrives as a tuple from Click.
+    # Convert to list before using:
+    run_params = list(run_param)
+
+    # TODO: SCHEDULER API — trigger the workflow named `name` with `run_params`
+    # After triggering, write a JSON file to deployer_attribute_file with at least:
+    #   {{"pathspec": "<FlowName>/<run_id>"}}
+    raise NotImplementedError("trigger() not yet implemented")
 '''
 
 
@@ -322,36 +484,38 @@ def list():
 # ---------------------------------------------------------------------------
 
 _MFEXTINIT_TEMPLATE = '''\
-"""
-Metaflow extension registration for {name}.
+"""Metaflow extension registration for {name}.
 
-Generated by: python -m metaflow_orchestrator_kit.scaffold {name}
+Metaflow discovers this file automatically via the ``metaflow_extensions``
+namespace package mechanism (it scans for ``mfextinit_*.py`` files in any
+installed package under the ``metaflow_extensions`` namespace).
 
-This file registers the {name} deployer, CLI group, and step decorator with
-Metaflow\'s extension system.  Place it at:
-
+Place this file at:
     metaflow_extensions/{name}/plugins/mfextinit_{name}.py
 
-Metaflow discovers this file automatically when the extension package is installed.
-After placing it, `Deployer(flow_file).{name}()` becomes available.
+After ``pip install -e .`` the following becomes available:
+  - ``python flow.py {name} create ...`` (CLI)
+  - ``Deployer(flow_file).{name}(...)`` (Python API)
+  - ``--scheduler-type={name}`` in UX tests
 
 Reference: https://docs.metaflow.org/internals/extensions
 """
 
-# Register the CLI group: `python flow.py {name} create ...`
+# Register the CLI group: ``python flow.py {name} create ...``
 CLIS_DESC = [
     ("{name}", ".{name}.{name}_cli.cli"),
 ]
 
-# Register the step decorator used for internal runtime tracking.
-# Remove this if your orchestrator does not need a step decorator.
-STEP_DECORATORS_DESC = [
-    # ("{name}_internal", ".{name}.{name}_decorator.{classname}InternalDecorator"),
-]
-
-# Register the DeployerImpl subclass so `Deployer(flow_file).{name}()` works.
+# Register the DeployerImpl subclass so ``Deployer(flow_file).{name}()`` works.
+# The string is a dotted import path relative to this package\'s ``plugins/`` directory.
 DEPLOYER_IMPL_PROVIDERS_DESC = [
     ("{name}", ".{name}.{name}_deployer.{classname}DeployerImpl"),
+]
+
+# Register the step decorator used for internal runtime tracking (optional).
+# Uncomment and implement if your orchestrator needs to inject state into steps.
+STEP_DECORATORS_DESC = [
+    # ("{name}_internal", ".{name}.{name}_decorator.{classname}InternalDecorator"),
 ]
 '''
 
@@ -361,7 +525,7 @@ DEPLOYER_IMPL_PROVIDERS_DESC = [
 # ---------------------------------------------------------------------------
 
 _GHA_TEMPLATE = """\
-name: UX Tests — {name}
+name: UX Tests - {name}
 
 # Compliance and integration tests for the {name} orchestrator.
 # Generated by: python -m metaflow_orchestrator_kit.scaffold {name}
@@ -388,12 +552,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Runner (local) backend — always included
+          # Runner (local) backend -- always included
           - backend: local
             services: "minio,postgresql,metadata-service"
             workers: 4
 
-          # {name} backend — add the services your scheduler needs
+          # {name} backend -- add the services your scheduler needs
           - backend: {name}
             services: "minio,postgresql,metadata-service"  # TODO: add {name} service
             workers: 4
@@ -430,7 +594,7 @@ jobs:
         working-directory: devtools
         run: |
           mkdir -p .devtools
-          SERVICES="${{{{ matrix.services }}}}" \\
+          SERVICES="${{ matrix.services }}" \\
             tilt up --stream 2>&1 | tee /tmp/tilt.log &
           for i in $(seq 1 60); do
             tilt get session >/dev/null 2>&1 && break
@@ -442,7 +606,7 @@ jobs:
       - name: Start minikube tunnel
         run: sudo minikube tunnel &
 
-      - name: Run compliance tests — ${{{{ matrix.backend }}}}
+      - name: Run compliance tests - ${{ matrix.backend }}
         run: |
           AWS_SHARED_CREDENTIALS_FILE="" \\
           PYTHONPATH=$PWD \\
@@ -453,20 +617,20 @@ jobs:
             test/ux/core/test_dag.py \\
             -m "not conda" \\
             --ux-config=test/ux/ux_test_config.yaml \\
-            --only-backend "${{{{ matrix.backend }}}}" \\
-            -n ${{{{ matrix.workers }}}} \\
+            --only-backend "${{ matrix.backend }}" \\
+            -n ${{ matrix.workers }} \\
             -v \\
             --tb=short \\
             --timeout=1800 \\
             --cov=metaflow \\
             --cov-report=xml:coverage.xml \\
-            --junit-xml=junit-${{{{ matrix.backend }}}}.xml
+            --junit-xml=junit-${{ matrix.backend }}.xml
 
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-${{{{ matrix.backend }}}}
+          name: coverage-${{ matrix.backend }}
           path: coverage.xml
           if-no-files-found: ignore
           include-hidden-files: true
@@ -475,8 +639,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: junit-${{{{ matrix.backend }}}}
-          path: junit-${{{{ matrix.backend }}}}.xml
+          name: junit-${{ matrix.backend }}
+          path: junit-${{ matrix.backend }}.xml
           if-no-files-found: ignore
 """
 
@@ -501,41 +665,54 @@ def _write(path: str, content: str) -> None:
 def scaffold(name: str, output_dir: str = ".") -> None:
     """Generate orchestrator skeleton files for the given scheduler name."""
     cls = _classname(name)
+    subdir = os.path.join(output_dir, name)
 
     files = {
-        f"{name}_deployer.py": _DEPLOYER_TEMPLATE.format(name=name, classname=cls),
-        f"{name}_objects.py": _OBJECTS_TEMPLATE.format(name=name, classname=cls),
-        f"{name}_cli.py": _CLI_TEMPLATE.format(name=name, classname=cls),
-        f"mfextinit_{name}.py": _MFEXTINIT_TEMPLATE.format(name=name, classname=cls),
-        f"ux-tests-{name}.yml": _GHA_TEMPLATE.format(name=name, classname=cls),
+        os.path.join(subdir, f"{name}_deployer.py"): _DEPLOYER_TEMPLATE.format(name=name, classname=cls),
+        os.path.join(subdir, f"{name}_objects.py"): _OBJECTS_TEMPLATE.format(name=name, classname=cls),
+        os.path.join(subdir, f"{name}_cli.py"): _CLI_TEMPLATE.format(name=name, classname=cls),
+        os.path.join(subdir, f"mfextinit_{name}.py"): _MFEXTINIT_TEMPLATE.format(name=name, classname=cls),
+        os.path.join(subdir, f"ux-tests-{name}.yml"): _GHA_TEMPLATE.format(name=name, classname=cls),
     }
 
     print(f"Scaffolding orchestrator: {name!r} (class prefix: {cls})")
-    for filename, content in files.items():
-        _write(os.path.join(output_dir, filename), content)
+    print(f"Output directory: {os.path.abspath(subdir)}/")
+    print()
+    for filepath, content in files.items():
+        _write(filepath, content)
 
     print()
+    print("=" * 60)
     print("Next steps:")
-    print(f"  1. Implement TODO sections in {name}_deployer.py and {name}_objects.py")
-    print(f"  2. Place the generated files in your extension package layout:")
+    print("=" * 60)
+    print()
+    print(f"  1. cd {name}/")
+    print()
+    print(f"  2. Fill in all # TODO: SCHEDULER API sections in:")
+    print(f"       {name}_deployer.py  - _compile_workflow(), _build_step_command()")
+    print(f"       {name}_objects.py   - trigger(), from_deployment(), status")
+    print(f"       {name}_cli.py       - create(), trigger()")
+    print()
+    print(f"  3. Place generated files in your extension package:")
     print(f"       metaflow_extensions/{name}/plugins/{name}/  <- deployer, objects, cli")
-    print(f"       metaflow_extensions/{name}/plugins/mfextinit_{name}.py  <- auto-discovery")
-    print(f"     Metaflow finds mfextinit_*.py automatically when the package is installed.")
-    print(f"     See: https://docs.metaflow.org/internals/extensions")
-    print(f"  3. Add a backend entry to ux_test_config.yaml")
-    print(f"  4. Run the compliance tests:")
-    print(
-        f"     python -m pytest metaflow_orchestrator_kit/compliance/ "
-        f"--ux-config=ux_test_config.yaml --only-backend {name} -v"
-    )
+    print(f"       metaflow_extensions/{name}/plugins/mfextinit_{name}.py")
+    print()
+    print(f"  4. Validate the implementation (catches common bugs without running tests):")
+    print(f"       python -m metaflow_orchestrator_kit.validate ./{name}/")
+    print()
+    print(f"  5. Run the compliance tests:")
+    print(f"       python -m metaflow_orchestrator_kit.test \\")
+    print(f"         --scheduler-type {name} \\")
+    print(f"         --deploy-args host=http://localhost:8080")
     print()
     print("Contract checklist (things every orchestrator gets wrong):")
-    print("  [ ] run_params is a list (not a tuple) in trigger()         [Cap.RUN_PARAMS]")
-    print("  [ ] --branch forwarded to every step subprocess             [Cap.PROJECT_BRANCH]")
-    print("  [ ] METAFLOW_FLOW_CONFIG_VALUE injected into container env  [Cap.CONFIG_EXPR]")
-    print("  [ ] retry_count derived from scheduler native attempt       [Cap.RETRY]")
-    print("  [ ] from_deployment handles dotted identifiers              [Cap.FROM_DEPLOYMENT]")
-    print("  [ ] All REQUIRED_ENV_VARS populated at step launch time")
+    print("  [ ] run_params is list (not tuple) in trigger()              [Cap.RUN_PARAMS]")
+    print("  [ ] --branch forwarded to every step subprocess              [Cap.PROJECT_BRANCH]")
+    print("  [ ] METAFLOW_FLOW_CONFIG_VALUE injected into container env   [Cap.CONFIG_EXPR]")
+    print("  [ ] retry_count derived from scheduler native attempt        [Cap.RETRY]")
+    print("  [ ] from_deployment handles dotted identifiers               [Cap.FROM_DEPLOYMENT]")
+    print("  [ ] METAFLOW_DATASTORE_SYSROOT_LOCAL captured at compile time")
+    print("  [ ] --environment passed to step command (for @conda)")
 
 
 def main():

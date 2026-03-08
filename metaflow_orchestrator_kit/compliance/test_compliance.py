@@ -359,6 +359,98 @@ def test_nested_foreach_or_skip(
 
 
 # ---------------------------------------------------------------------------
+# test_conda_packages_available
+#
+# WHY: @conda uses a class-level _metaflow_home attribute that is only set by
+# runtime_init().  For subprocess-based orchestrators runtime_init() is called
+# automatically when the step subprocess re-enters the Metaflow runtime.  But
+# for in-process executors (Dagster execute_job(), Windmill sync functions,
+# Mage) runtime_init() is never called, so:
+#   - _metaflow_home is None
+#   - the code package is never extracted
+#   - conda-installed packages are not on PYTHONPATH
+#   - steps fail with ModuleNotFoundError for any conda package
+#
+# helloconda.py has a @conda step that imports 'regex' (a conda-only package)
+# and stores the version in self.lib_version.  If the conda environment was not
+# set up correctly, the step fails before setting that artifact.
+#
+# The test verifies the exact version string, not just that the step succeeded,
+# because a step could succeed while silently importing the system regex instead
+# of the conda-env regex (e.g. if the system also has regex installed).
+#
+# Capability: Cap.CONDA (OPTIONAL)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.compliance
+@pytest.mark.scheduler_only
+def test_conda_packages_available(
+    exec_mode, decospecs, compute_env, tag, scheduler_config
+):
+    """
+    @conda steps must be able to import conda-installed packages.
+
+    Verifies that the conda environment is properly activated for step tasks,
+    not just that the step completes.  Checks the exact package version to catch
+    cases where the system package is imported instead of the conda-env package.
+    """
+    if exec_mode != "deployer":
+        pytest.skip("compliance test requires deployer mode")
+
+    _require_cap(
+        scheduler_config,
+        Cap.CONDA,
+        unsupported_schedulers={},  # no known-unsupported schedulers for conda
+    )
+
+    test_unique_tag = f"test_compliance_conda_{exec_mode}"
+    combined_tags = tag + [test_unique_tag]
+
+    tl_args = {
+        "env": compute_env,
+        "decospecs": decospecs,
+    }
+
+    deployed_flow = deploy_flow_to_scheduler(
+        flow_name="basic/helloconda.py",
+        tl_args=tl_args,
+        scheduler_args={"cluster": scheduler_config.cluster},
+        deploy_args={"tags": combined_tags, **(scheduler_config.deploy_args or {})},
+        scheduler_type=scheduler_config.scheduler_type,
+    )
+
+    run = wait_for_deployed_run(deployed_flow)
+
+    assert run.successful, (
+        "helloconda.py run failed. This usually means the conda environment was not "
+        "set up correctly: check that runtime_init() was called (subprocess-based "
+        "orchestrators) or that 'conda run -n <env>' wraps the step command "
+        "(in-process executors like Dagster)."
+    )
+
+    # Verify the exact conda-installed package version, not just task success.
+    # If the system regex is imported instead of the conda-env one, versions
+    # would differ and reveal the environment setup bug.
+    lib_version = run["v1"].task.data.lib_version
+    assert lib_version is not None, (
+        "lib_version artifact is None — the conda step may have succeeded without "
+        "actually running the conda-installed package."
+    )
+    assert isinstance(lib_version, str) and len(lib_version) > 0, (
+        f"lib_version is not a non-empty string: {lib_version!r}"
+    )
+    # The version string should look like a semver (digits and dots).
+    # We do not pin the exact version to avoid breaking when the flow is updated,
+    # but we verify it came from the conda env, not a missing/None value.
+    import re as _re
+    assert _re.match(r"^\d+\.\d+", lib_version), (
+        f"lib_version {lib_version!r} does not look like a package version. "
+        "The @conda step may not have imported from the conda environment."
+    )
+
+
+# ---------------------------------------------------------------------------
 # test_from_deployment_dotted_name
 #
 # WHY: DAG IDs in @project-decorated flows are dotted: project.branch.FlowName.
