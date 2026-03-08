@@ -95,6 +95,28 @@ def _find_cli_file(files: dict) -> Optional[Tuple[str, str]]:
 # ---------------------------------------------------------------------------
 
 
+def _check_no_init_in_metaflow_extensions(directory: str) -> _Check:
+    """metaflow_extensions/ must be an implicit namespace package — no __init__.py."""
+    bad = os.path.join(directory, "metaflow_extensions", "__init__.py")
+    if os.path.exists(bad):
+        return _Check(
+            "metaflow_extensions/ has no __init__.py",
+            False,
+            "metaflow_extensions/__init__.py found — this BREAKS extension discovery",
+            hint=(
+                "Delete metaflow_extensions/__init__.py. The metaflow_extensions/ directory "
+                "must be an implicit namespace package (no __init__.py). Adding __init__.py "
+                "prevents Metaflow from merging extensions across packages, so "
+                "Deployer(flow).your_scheduler() will not exist after install."
+            ),
+        )
+    return _Check(
+        "metaflow_extensions/ has no __init__.py",
+        True,
+        "implicit namespace package (correct)",
+    )
+
+
 def _check_mfextinit_exists(files: dict) -> _Check:
     result = _find_mfextinit_file(files)
     if result:
@@ -424,6 +446,7 @@ def validate(directory: str) -> List[_Check]:
         return []
 
     checks = [
+        _check_no_init_in_metaflow_extensions(directory),
         _check_mfextinit_exists(files),
         _check_deployer_impl_providers(files),
         _check_run_params_list(files),
