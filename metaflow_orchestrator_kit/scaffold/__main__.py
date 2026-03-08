@@ -239,9 +239,21 @@ class {classname}DeployerImpl(DeployerImpl):
         #          python flow.py init --run-id <run_id> --task-id 1
         #      IMPORTANT: --task-id IS required in OSS Metaflow (some forks made
         #      it optional, but OSS always requires it).  --task-id for init is 1.
+        #      DO NOT pass --run-param to init: that flag is NFLX-only and does not
+        #      exist in OSS Metaflow.  Parameters in OSS are resolved during step
+        #      execution, not during init.
         #   3. For each step: the command (see _build_step_command below)
         #   4. required_env injected into every step container/process env
         #   5. branch stored so it can be passed to each step command
+        #
+        # DOCKER WORKERS — inter-step data passing:
+        #   Each step runs in a separate container; /tmp is NOT shared between steps.
+        #   Do not write run_id or other coordination data to /tmp files.
+        #   Use the scheduler's native inter-step mechanism (return values,
+        #   environment variable injection, or a shared external store) to pass
+        #   the run_id from the init step to subsequent steps.
+        #   Example (Windmill): the init bash module prints the run_id as its last
+        #   line; subsequent modules access it via results.<init_module_id>.
 
         return {{
             "flow_name": flow_name,

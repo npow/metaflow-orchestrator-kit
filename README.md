@@ -201,7 +201,9 @@ Every new orchestrator implementation hits the same bugs. The scaffold pre-solve
 
 **7. Extension not auto-discovered (`Deployer` missing `.my_scheduler()`)** — `Deployer(flow_file).my_scheduler()` raises `AttributeError` with no indication why. Metaflow reads `DEPLOYER_IMPL_PROVIDERS_DESC` from `mfextinit_<name>.py`; if it's missing, misnamed, in the wrong directory, or the descriptor is malformed, the deployer is silently not registered. Fix: ensure `mfextinit_<name>.py` lives at `metaflow_extensions/<name>/plugins/` and `DEPLOYER_IMPL_PROVIDERS_DESC = [("<name>", ".<name>.<name>_deployer.<Class>DeployerImpl")]`. Run `python -m metaflow_orchestrator_kit.validate .` to catch this before CI.
 
-**8. Docker-based workers cannot reach the local filesystem** — Schedulers that run workers in Docker containers (Windmill, Prefect, Argo) isolate the worker filesystem from the host. The step command uses the absolute host path to the flow file (e.g. `/Users/me/project/flow.py`), but that path does not exist inside the container. The same applies to `METAFLOW_DATASTORE_SYSROOT_LOCAL`: if the sysroot path is a host-local directory, the worker writes to a different directory than the deployer reads from, so `wait_for_deployed_run()` polls forever.
+**8. Docker workers do not share `/tmp` between steps** — Each step in a Docker-worker scheduler (Windmill, Prefect, Argo) runs in a separate container. Files written to `/tmp` in the init step (e.g. a `run_id` file) are NOT visible to the next step container. Concretely: if the init script writes `echo $RUN_ID > /tmp/mf_run_id.txt`, the start step running in a different container reads an empty file and fails with `ERROR: RUN_ID not set`. Fix: use the scheduler's native inter-step data passing mechanism (return values, environment variable injection, shared volumes, or a short-lived key-value store) to pass the run ID from init to subsequent steps. For example in Windmill, a bash module's stdout is the return value — print the run ID as JSON and access it as `results.<module_id>` in later modules.
+
+**8b. Docker-based workers cannot reach the local filesystem (host paths)** — Schedulers that run workers in Docker containers (Windmill, Prefect, Argo) isolate the worker filesystem from the host. The step command uses the absolute host path to the flow file (e.g. `/Users/me/project/flow.py`), but that path does not exist inside the container. The same applies to `METAFLOW_DATASTORE_SYSROOT_LOCAL`: if the sysroot path is a host-local directory, the worker writes to a different directory than the deployer reads from, so `wait_for_deployed_run()` polls forever.
 
 **Recommended fix (production):** Build a custom worker Docker image that has Metaflow installed via `pip install metaflow` and use a shared object store (S3/MinIO) as the datastore. This avoids all filesystem sharing problems.
 
@@ -224,7 +226,9 @@ If you still see extension-loading failures, the container's Python may discover
 pip install metaflow requests  # in the step's bash preamble
 ```
 
-**9. `init` command missing `--task-id`** — The Metaflow `init` subcommand requires `--task-id` in OSS Metaflow (some internal forks made it optional). If you generate an init script without `--task-id`, the init step fails with `Error: Missing option '--task-id'`. Fix: always include `--task-id 1` in the init command (the init step always runs as task 1):
+**9. `--run-param` is not an OSS Metaflow init option** — Some internal Metaflow forks added `--run-param "name=value"` to the `init` command to pre-populate parameters. OSS Metaflow's `init` does not have this option; passing it causes `Error: no such option: --run-param`. In OSS Metaflow, flow parameters are resolved during step execution, not during init. Do not include `--run-param` in the init step command if your extension must work with OSS Metaflow.
+
+**10. `init` command missing `--task-id`** — The Metaflow `init` subcommand requires `--task-id` in OSS Metaflow (some internal forks made it optional). If you generate an init script without `--task-id`, the init step fails with `Error: Missing option '--task-id'`. Fix: always include `--task-id 1` in the init command (the init step always runs as task 1):
 ```bash
 # Wrong — missing --task-id:
 python flow.py init --run-id $RUN_ID
@@ -233,7 +237,7 @@ python flow.py init --run-id $RUN_ID
 python flow.py init --run-id $RUN_ID --task-id 1
 ```
 
-**10. `--tag` passed as a global CLI flag instead of a subcommand argument** — Metaflow's flow CLI does not accept `--tag` as a top-level global option. `--tag` is only valid after the subcommand (`step`, `run`, `init`). Passing it before the subcommand causes `Error: no such option: --tag` inside the Docker worker. Fix: append `--tag <value>` to the command list after `"step"`, `"step_name"`, not before:
+**11. `--tag` passed as a global CLI flag instead of a subcommand argument** — Metaflow's flow CLI does not accept `--tag` as a top-level global option. `--tag` is only valid after the subcommand (`step`, `run`, `init`). Passing it before the subcommand causes `Error: no such option: --tag` inside the Docker worker. Fix: append `--tag <value>` to the command list after `"step"`, `"step_name"`, not before:
 ```python
 # Wrong — --tag before "step":
 cmd = [python, flow, "--no-pylint", "--tag", tag, "step", step_name, ...]
@@ -244,7 +248,7 @@ cmd = [python, flow, "--no-pylint", "step", step_name, "--tag", tag, ...]
 
 **10. Scheduler auth tokens expire** — If your scheduler issues short-lived auth tokens (Windmill, Kestra), tests that start a long-running deploy+trigger sequence may fail with 401 on the trigger API call because the token used at `create()` time has expired by the time `trigger()` is called. Fix: either use long-lived tokens (service account tokens in Windmill: `Settings > Users & Tokens > Tokens > Add token` with no expiry), or fetch a fresh token at the start of each `trigger()` call rather than caching the token from `create()`.
 
-**11. Scheduler internal indexing delay after workflow creation** — Some schedulers (Mage, Prefect, Windmill) index or cache newly-created pipelines/DAGs asynchronously. If you make a second API call immediately after the creation POST (e.g. creating a schedule, listing runs, or triggering), the scheduler may return 500 or `'NoneType' object has no attribute 'uuid'` because the pipeline is not yet in the cache. Fix: add a short delay between `_create_pipeline()` / `_compile_workflow()` and any subsequent API call that references the newly-created resource. A 1–2 second sleep is enough for most schedulers. If the second call is not strictly required for the trigger to work (e.g. schedule creation for Mage), make it optional and catch failures gracefully:
+**12. Scheduler internal indexing delay after workflow creation** — Some schedulers (Mage, Prefect, Windmill) index or cache newly-created pipelines/DAGs asynchronously. If you make a second API call immediately after the creation POST (e.g. creating a schedule, listing runs, or triggering), the scheduler may return 500 or `'NoneType' object has no attribute 'uuid'` because the pipeline is not yet in the cache. Fix: add a short delay between `_create_pipeline()` / `_compile_workflow()` and any subsequent API call that references the newly-created resource. A 1–2 second sleep is enough for most schedulers. If the second call is not strictly required for the trigger to work (e.g. schedule creation for Mage), make it optional and catch failures gracefully:
 ```python
 try:
     schedule_id = _create_api_trigger(client, pipeline_uuid)

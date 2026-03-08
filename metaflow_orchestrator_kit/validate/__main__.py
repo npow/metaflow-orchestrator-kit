@@ -438,6 +438,45 @@ def _check_environment_type(files: dict) -> _Check:
     )
 
 
+def _check_no_run_param_in_init(files: dict) -> _Check:
+    """init command must not include --run-param (NFLX-only flag).
+
+    Some internal Metaflow forks added --run-param "name=value" to the init
+    command.  OSS Metaflow does not have this option; passing it causes:
+        Error: no such option: --run-param
+
+    In OSS Metaflow, flow parameters are resolved during step execution, not
+    during init.  Never include --run-param in the init step command.
+    """
+    all_content = "\n".join(files.values())
+
+    # Look for --run-param near "init" subcommand
+    has_run_param_in_init = bool(
+        re.search(r'"init"[^}]{0,300}"--run-param"', all_content) or
+        re.search(r"'init'[^}]{0,300}'--run-param'", all_content) or
+        re.search(r'"--run-param"[^}]{0,200}"init"', all_content)
+    )
+
+    if has_run_param_in_init:
+        return _Check(
+            "init command does not use --run-param (NFLX-only flag)",
+            False,
+            "--run-param flag found near init subcommand",
+            hint=(
+                "Remove --run-param from the init command.  This flag is only available in "
+                "internal Metaflow forks (NFLX), not in OSS Metaflow.  In OSS, flow parameters "
+                "are resolved during step execution, not during init.  Passing --run-param "
+                "causes: Error: no such option: --run-param"
+            ),
+        )
+
+    return _Check(
+        "init command does not use --run-param (NFLX-only flag)",
+        True,
+        "no --run-param in init command",
+    )
+
+
 def _check_init_has_task_id(files: dict) -> _Check:
     """The 'init' step command must include --task-id.
 
@@ -715,6 +754,7 @@ def validate(directory: str) -> List[_Check]:
         _check_retry_count_not_hardcoded(files),
         _check_datastore_sysroot(files),
         _check_environment_type(files),
+        _check_no_run_param_in_init(files),
         _check_init_has_task_id(files),
         _check_tag_after_subcommand(files),
         _check_pythonpath_no_extension_package(files),
