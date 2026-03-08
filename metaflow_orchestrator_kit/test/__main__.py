@@ -408,6 +408,18 @@ def main():
         # Remove non-compliance modules if no flows dir
         test_modules = [m for m in test_modules if m == "compliance"]
 
+    # Use an isolated sysroot per test run to prevent contamination between
+    # concurrent test runs (e.g. two orchestrators running in parallel).
+    # Each invocation gets its own tmpdir so artifacts never bleed across runs.
+    import tempfile, uuid
+    sysroot = os.environ.get(
+        "METAFLOW_DATASTORE_SYSROOT_LOCAL",
+        os.path.join(tempfile.gettempdir(), f"mf-kit-test-{args.scheduler_type}-{uuid.uuid4().hex[:8]}"),
+    )
+    os.makedirs(sysroot, exist_ok=True)
+    os.environ["METAFLOW_DATASTORE_SYSROOT_LOCAL"] = sysroot
+    print(f"Using isolated sysroot: {sysroot}")
+
     # Pre-flight checks — run before writing the config or starting pytest so that
     # problems are surfaced immediately rather than buried in test output.
     _warn_stale_state(args.scheduler_type)
@@ -418,8 +430,8 @@ def main():
         config_path = args.config_path
         _write_ux_test_config(args.scheduler_type, deploy_args, config_path)
     else:
-        # Use a temp file in cwd so it's easy to inspect
-        config_path = "ux_test_config_generated.yaml"
+        # Use a scheduler-specific name to avoid concurrent runs overwriting each other
+        config_path = f"ux_test_config_{args.scheduler_type}.yaml"
         _write_ux_test_config(args.scheduler_type, deploy_args, config_path)
 
     # Build and run pytest
