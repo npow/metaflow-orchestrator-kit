@@ -593,9 +593,29 @@ def trigger(name, run_param, deployer_attribute_file):
     # Print the full response first with METAFLOW_DEBUG_DEPLOYER=1 to discover the keys.
     run_id = None  # TODO: SCHEDULER API — replace with response_data["<key>"]
 
-    # After triggering, write a JSON file to deployer_attribute_file with at least:
-    #   {{"pathspec": "<FlowName>/<run_id>"}}
-    raise NotImplementedError("trigger() not yet implemented")
+    # CRITICAL ORDER: write deployer_attribute_file BEFORE executing steps.
+    # Metaflow's Deployer.trigger() blocks waiting for this file to appear.
+    # If you write it AFTER steps complete, the deployer blocks for the full
+    # flow execution time, causing test timeouts (pytest --timeout killed the
+    # subprocess before it could write the file).
+    #
+    # Write the file immediately with at least: {{"pathspec": "<FlowName>/<run_id>"}}
+    # so that handle_timeout returns quickly, then execute steps.
+    #
+    # TODO: SCHEDULER API — replace this with real values:
+    import json as _json, uuid as _uuid, os as _os
+    run_id = "TODO_SCHEDULER_run_" + _uuid.uuid4().hex[:12]  # TODO: SCHEDULER API
+    flow_name = "TODO_FLOW_NAME"  # TODO: SCHEDULER API — get from config
+    pathspec = f"{{flow_name}}/{{run_id}}"
+
+    # Write the attribute file FIRST — do not move this after step execution.
+    if deployer_attribute_file:
+        with open(deployer_attribute_file, "w") as _f:
+            _json.dump({{"pathspec": pathspec}}, _f)
+
+    # TODO: SCHEDULER API — now trigger the workflow named `name` with `run_params`.
+    # The step execution can happen synchronously or asynchronously after this point.
+    raise NotImplementedError("trigger() scheduler API call not yet implemented")
 '''
 
 

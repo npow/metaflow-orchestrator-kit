@@ -257,7 +257,23 @@ cmd = [python, flow, "--no-pylint", "step", step_name, "--tag", tag, ...]
 
 **10. Scheduler auth tokens expire** — If your scheduler issues short-lived auth tokens (Windmill, Kestra), tests that start a long-running deploy+trigger sequence may fail with 401 on the trigger API call because the token used at `create()` time has expired by the time `trigger()` is called. Fix: either use long-lived tokens (service account tokens in Windmill: `Settings > Users & Tokens > Tokens > Add token` with no expiry), or fetch a fresh token at the start of each `trigger()` call rather than caching the token from `create()`.
 
-**12. Scheduler internal indexing delay after workflow creation** — Some schedulers (Mage, Prefect, Windmill) index or cache newly-created pipelines/DAGs asynchronously. If you make a second API call immediately after the creation POST (e.g. creating a schedule, listing runs, or triggering), the scheduler may return 500 or `'NoneType' object has no attribute 'uuid'` because the pipeline is not yet in the cache. Fix: add a short delay between `_create_pipeline()` / `_compile_workflow()` and any subsequent API call that references the newly-created resource. A 1–2 second sleep is enough for most schedulers. If the second call is not strictly required for the trigger to work (e.g. schedule creation for Mage), make it optional and catch failures gracefully:
+**12. `trigger` CLI command must write `deployer_attribute_file` BEFORE executing steps** — The Metaflow `Deployer` API calls the `trigger` CLI command as a subprocess and waits for `deployer_attribute_file` to appear (via `handle_timeout`, default 3600s). For orchestrators that execute steps directly in the trigger subprocess (Mage, Dagster direct execution), the trigger command typically writes the attribute file AFTER all steps complete. This causes the deployer's `trigger()` call to block for the entire flow execution time. If the test timeout (pytest `--timeout`) is shorter than the flow execution time, the subprocess is killed before writing the file and the test fails with `Timeout`. Fix: write `deployer_attribute_file` BEFORE executing the steps, then run steps in the background or synchronously afterward. This way `handle_timeout` returns immediately with the run pathspec, and `wait_for_deployed_run()` polls for completion:
+```python
+# In the trigger CLI command:
+run_id = "myscheduler-" + uuid.uuid4().hex[:12]
+pathspec = f"{flow_name}/{run_id}"
+
+# WRITE THE FILE FIRST before running any steps.
+# This unblocks Deployer.trigger() immediately.
+if deployer_attribute_file:
+    with open(deployer_attribute_file, "w") as f:
+        json.dump({"pathspec": pathspec}, f)
+
+# THEN execute the steps (synchronously or async).
+_execute_flow_steps(run_id, ...)
+```
+
+**13. Scheduler internal indexing delay after workflow creation** — Some schedulers (Mage, Prefect, Windmill) index or cache newly-created pipelines/DAGs asynchronously. If you make a second API call immediately after the creation POST (e.g. creating a schedule, listing runs, or triggering), the scheduler may return 500 or `'NoneType' object has no attribute 'uuid'` because the pipeline is not yet in the cache. Fix: add a short delay between `_create_pipeline()` / `_compile_workflow()` and any subsequent API call that references the newly-created resource. A 1–2 second sleep is enough for most schedulers. If the second call is not strictly required for the trigger to work (e.g. schedule creation for Mage), make it optional and catch failures gracefully:
 ```python
 try:
     schedule_id = _create_api_trigger(client, pipeline_uuid)
