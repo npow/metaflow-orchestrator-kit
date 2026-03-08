@@ -49,14 +49,25 @@ metaflow-orchestrator-scaffold my_scheduler
 # equivalent: python -m metaflow_orchestrator_kit.scaffold my_scheduler
 ```
 
-Generates four files:
+Generates five files:
 
 ```
 my_scheduler_deployer.py      DeployerImpl subclass — all required TODOs annotated
 my_scheduler_objects.py       DeployedFlow / TriggeredRun subclasses
-my_scheduler_cli.py           CLI entry-point group (register in metaflow/plugins/__init__.py)
+my_scheduler_cli.py           CLI entry-point group
+mfextinit_my_scheduler.py     Extension registration (auto-discovered by Metaflow)
 ux-tests-my_scheduler.yml     GitHub Actions workflow skeleton
 ```
+
+Place the generated files in the standard extension layout before implementing:
+
+```
+metaflow_extensions/my_scheduler/plugins/my_scheduler/  ← deployer, objects, cli
+metaflow_extensions/my_scheduler/plugins/mfextinit_my_scheduler.py
+```
+
+Metaflow discovers `mfextinit_*.py` automatically when the extension package is installed.
+After installation, `Deployer(flow_file).my_scheduler()` is available with no other registration needed.
 
 ### Declare capabilities
 
