@@ -438,6 +438,56 @@ def _check_environment_type(files: dict) -> _Check:
     )
 
 
+def _check_init_has_task_id(files: dict) -> _Check:
+    """The 'init' step command must include --task-id.
+
+    OSS Metaflow's 'init' subcommand requires --task-id (some internal forks
+    made it optional, but OSS always requires it).  Without it:
+        Error: Missing option '--task-id'
+
+    The init step always runs as task 1:
+        python flow.py init --run-id <run_id> --task-id 1
+
+    Detection: look for the string 'init' near '--run-id' but without '--task-id'
+    nearby.  This catches the common mistake of generating the init command from
+    the same template as step commands but forgetting --task-id for init.
+    """
+    all_content = "\n".join(files.values())
+
+    # Quick scan: does the implementation mention 'init' as a subcommand?
+    has_init_subcommand = bool(
+        re.search(r'"init"', all_content) or re.search(r"'init'", all_content)
+    )
+    if not has_init_subcommand:
+        return _Check(
+            "init command includes --task-id",
+            True,
+            "no init subcommand found — skipped",
+        )
+
+    # Look for "init" followed by "--run-id" without "--task-id" in the same context.
+    # Heuristic: within a 300-char window, "init" + "--run-id" but no "--task-id".
+    for m in re.finditer(r'"init"', all_content):
+        window = all_content[m.start():m.start() + 400]
+        if "--run-id" in window and "--task-id" not in window:
+            return _Check(
+                "init command includes --task-id",
+                False,
+                "init command found with --run-id but missing --task-id",
+                hint=(
+                    "Add --task-id 1 to the init command.  OSS Metaflow's init subcommand "
+                    "requires --task-id — some internal forks made it optional, but OSS does not.  "
+                    "Correct: python flow.py init --run-id <id> --task-id 1"
+                ),
+            )
+
+    return _Check(
+        "init command includes --task-id",
+        True,
+        "init command appears to include --task-id",
+    )
+
+
 def _check_tag_after_subcommand(files: dict) -> _Check:
     """--tag must appear AFTER the step/run subcommand, not before it.
 
@@ -665,6 +715,7 @@ def validate(directory: str) -> List[_Check]:
         _check_retry_count_not_hardcoded(files),
         _check_datastore_sysroot(files),
         _check_environment_type(files),
+        _check_init_has_task_id(files),
         _check_tag_after_subcommand(files),
         _check_pythonpath_no_extension_package(files),
         _check_scheduler_api_optional(files),

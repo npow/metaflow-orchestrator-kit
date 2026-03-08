@@ -235,9 +235,13 @@ class {classname}DeployerImpl(DeployerImpl):
         # TODO: SCHEDULER API — build the actual workflow definition here.
         # The workflow must encode:
         #   1. The DAG structure (from `graph`)
-        #   2. For each step: the command (see _build_step_command below)
-        #   3. required_env injected into every step container/process env
-        #   4. branch stored so it can be passed to each step command
+        #   2. An "init" step that runs first:
+        #          python flow.py init --run-id <run_id> --task-id 1
+        #      IMPORTANT: --task-id IS required in OSS Metaflow (some forks made
+        #      it optional, but OSS always requires it).  --task-id for init is 1.
+        #   3. For each step: the command (see _build_step_command below)
+        #   4. required_env injected into every step container/process env
+        #   5. branch stored so it can be passed to each step command
 
         return {{
             "flow_name": flow_name,

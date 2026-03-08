@@ -224,7 +224,16 @@ If you still see extension-loading failures, the container's Python may discover
 pip install metaflow requests  # in the step's bash preamble
 ```
 
-**9. `--tag` passed as a global CLI flag instead of a subcommand argument** — Metaflow's flow CLI does not accept `--tag` as a top-level global option. `--tag` is only valid after the subcommand (`step`, `run`, `init`). Passing it before the subcommand causes `Error: no such option: --tag` inside the Docker worker. Fix: append `--tag <value>` to the command list after `"step"`, `"step_name"`, not before:
+**9. `init` command missing `--task-id`** — The Metaflow `init` subcommand requires `--task-id` in OSS Metaflow (some internal forks made it optional). If you generate an init script without `--task-id`, the init step fails with `Error: Missing option '--task-id'`. Fix: always include `--task-id 1` in the init command (the init step always runs as task 1):
+```bash
+# Wrong — missing --task-id:
+python flow.py init --run-id $RUN_ID
+
+# Correct:
+python flow.py init --run-id $RUN_ID --task-id 1
+```
+
+**10. `--tag` passed as a global CLI flag instead of a subcommand argument** — Metaflow's flow CLI does not accept `--tag` as a top-level global option. `--tag` is only valid after the subcommand (`step`, `run`, `init`). Passing it before the subcommand causes `Error: no such option: --tag` inside the Docker worker. Fix: append `--tag <value>` to the command list after `"step"`, `"step_name"`, not before:
 ```python
 # Wrong — --tag before "step":
 cmd = [python, flow, "--no-pylint", "--tag", tag, "step", step_name, ...]
