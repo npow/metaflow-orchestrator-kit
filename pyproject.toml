@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=61"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "metaflow-orchestrator-kit"
@@ -20,3 +20,13 @@ metaflow-orchestrator-scaffold = "metaflow_orchestrator_kit.scaffold.__main__:ma
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["metaflow_orchestrator_kit*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "compliance: orchestrator compliance tests",
+    "scheduler_only: tests that require a live scheduler (deployer mode only)",
+    "basic: basic flow execution tests",
+    "config: config/project decorator tests",
+    "dag: DAG structure tests (branching, foreach, nested foreach)",
+    "data_ux: data-layer UX tests",
+]
