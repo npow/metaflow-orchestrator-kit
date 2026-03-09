@@ -322,6 +322,82 @@ env["METAFLOW_DATASTORE_SYSROOT_LOCAL"] = os.path.dirname(DATASTORE_ROOT)
 
 **24. Template engines that process `{` in env values** — Schedulers that use template engines (Kestra/Pebble, Jinja2, Mustache) to render step scripts will try to evaluate `{{ ... }}` inside env var values. `METAFLOW_FLOW_CONFIG_VALUE` contains JSON with `{` characters which will be misinterpreted as template expressions. Fix: escape braces or pass the config value through a scheduler variable/secret rather than inlining the JSON directly in the rendered script.
 
+**25. GHA Docker-worker schedulers need workspace and `/tmp` volume mounts** — Schedulers that run workers in Docker containers (Windmill, Mage, Kestra, Argo) bake the absolute host path to `flow_file` and `METAFLOW_DATASTORE_SYSROOT_LOCAL` into step scripts at compile time. These paths don't exist inside worker containers by default. In GHA CI, add volume mounts to the worker `docker run` command:
+```yaml
+docker run -d \
+  --name my_scheduler_worker \
+  --network host \
+  -v "${{ github.workspace }}":"${{ github.workspace }}" \   # flow file path
+  -v /tmp:/tmp \                                             # sysroot (/tmp/...)
+  -e MODE=worker \
+  my_scheduler_image:latest
+```
+Without these mounts, every step subprocess fails with `FileNotFoundError` or writes artifacts that the test process can never find. The `PYTHONPATH` baked into step scripts also requires a matching mount if it points inside the workspace.
+
+**26. Root-owned artifact files from Docker workers are unreadable by the test process** — Docker-worker schedulers (Kestra, Mage, Windmill, Argo) typically run containers as root. Metaflow's local datastore explicitly calls `os.chmod(path, 0o600)` on every artifact file regardless of umask. Root-owned 600 files are unreadable by the GHA `runner` user, so all artifact-reading assertions fail with `PermissionError`. Fix: run pytest as root via `sudo -E pytest ...`. GHA runners have passwordless sudo and root can read root-owned 600 files:
+```yaml
+- name: Run deployer tests
+  run: |
+    sudo -E env "PATH=$PATH" "HOME=$HOME" \
+      "METAFLOW_DATASTORE_SYSROOT_LOCAL=$HOME" \
+      python -m pytest ...
+```
+Note: a `sitecustomize.py` umask trick (`os.umask(0o022)`) only affects directory creation, not Metaflow's explicit `chmod` calls.
+
+**27. Scheduler attempt counters are 1-indexed; Metaflow's `--retry-count` is 0-indexed** — Most schedulers start counting attempts from 1 for the first execution (Prefect `task_run.run_count`, Temporal `workflow_info.attempt`, Airflow `context["ti"].try_number`). Metaflow's `--retry-count` is 0-indexed — 0 means "first attempt". Passing the raw scheduler counter gives the first attempt `--retry-count 1`, making `@retry` think it is already a retry and causing off-by-one errors in `current.retry_count`. Fix: always subtract 1 and clamp to 0:
+```python
+# WRONG — passes 1 for the first attempt:
+retry_count = scheduler_attempt_counter
+# CORRECT:
+retry_count = max(0, scheduler_attempt_counter - 1)
+```
+This is separate from pitfall #4 (hardcoding 0): both are wrong; the correct value is `max(0, native_counter - 1)`.
+
+**28. Use `Popen` + `communicate()` instead of `subprocess.run()` for step subprocesses** — `subprocess.run()` blocks until the child exits and does not propagate cancellation signals. When a scheduler cancels an activity (timeout, user cancellation, SIGTERM on worker shutdown), the Metaflow step subprocess becomes an orphan — running indefinitely, consuming resources, and writing to a dead run. Fix: use `Popen` with a `BaseException` handler:
+```python
+proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+try:
+    stdout, stderr = proc.communicate()
+except BaseException:
+    proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+    raise
+if proc.returncode != 0:
+    raise RuntimeError("Step %r failed (exit %d): %s" % (step_name, proc.returncode, stderr[-500:]))
+```
+`BaseException` (not `Exception`) catches `KeyboardInterrupt`, `SystemExit`, and threading cancellation signals that schedulers use.
+
+**29. GHA `${{ env.HOME }}` is invalid in job-level `env:` blocks** — GHA expressions like `${{ env.HOME }}` are only evaluated inside `run:` steps, not in job-level or step-level `env:` blocks. Using `${{ env.HOME }}` in a job `env:` block causes "context access of 'HOME' is not allowed here". Fix: set the env var inside a `run:` step or use `$GITHUB_ENV`:
+```yaml
+# WRONG — job-level env: block:
+env:
+  METAFLOW_DATASTORE_SYSROOT_LOCAL: ${{ env.HOME }}  # error
+
+# CORRECT — inside a run: step:
+- name: Set sysroot
+  run: echo "METAFLOW_DATASTORE_SYSROOT_LOCAL=$HOME" >> "$GITHUB_ENV"
+```
+
+**30. `init` parameters must be CLI flags (`--name value`), not env vars** — Flow parameters must be passed to the `init` subcommand as individual CLI flags (`--param-name value`), one per parameter. `add_custom_parameters` attaches each `@Parameter` as a Click option to `init`, `run`, and `resume`. Do not use `METAFLOW_PARAMETERS` (not a real Metaflow env var), `METAFLOW_INIT_<NAME>` env vars, or JSON encoding:
+```python
+# WRONG — METAFLOW_PARAMETERS does not exist in OSS Metaflow:
+env["METAFLOW_PARAMETERS"] = json.dumps({"greeting": "hello"})
+
+# CORRECT — CLI flags after the 'init' subcommand:
+from metaflow.parameters import Config
+params_for_init = [(name, p) for name, p in flow._get_parameters()
+                   if not isinstance(p, Config)]  # exclude @Config (pitfall #20)
+init_cmd = ["python", flow_file, "--no-pylint", "init",
+            "--run-id", run_id, "--task-id", "1"]
+for name, param in params_for_init:
+    if name in run_kwargs:
+        init_cmd += ["--%s" % name, str(run_kwargs[name])]
+```
+
 ## Development
 
 ```bash

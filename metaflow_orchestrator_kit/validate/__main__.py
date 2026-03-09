@@ -1286,6 +1286,124 @@ def _check_from_deployment_stores_metadata(files: dict) -> _Check:
     )
 
 
+def _check_subprocess_run_not_used_for_steps(files: dict) -> _Check:
+    """Pitfall #28: subprocess.run() creates orphan processes on scheduler cancellation.
+
+    When a scheduler cancels an activity (timeout, SIGTERM, user cancel),
+    subprocess.run() does not propagate the signal to the child process.
+    The Metaflow step keeps running as an orphan. Use Popen + communicate()
+    with a BaseException handler to kill the child on cancellation.
+    """
+    all_content = "\n".join(files.values())
+
+    # Look for subprocess.run( inside functions that also contain step-execution patterns
+    # Heuristic: find subprocess.run( near step/run-id/task-id patterns
+    has_subprocess_run = bool(re.search(r'subprocess\.run\s*\(', all_content))
+    has_step_execution = bool(
+        re.search(r'"step"\s*[,\]]', all_content) or
+        re.search(r"'step'\s*[,\]]", all_content) or
+        re.search(r'--run-id', all_content) or
+        re.search(r'--task-id', all_content)
+    )
+    has_popen = bool(re.search(r'subprocess\.Popen\s*\(', all_content))
+
+    if has_subprocess_run and has_step_execution and not has_popen:
+        return _Check(
+            "Popen+communicate() used instead of subprocess.run()",
+            False,
+            "subprocess.run() found in step-executing code but no subprocess.Popen()",
+            hint=(
+                "Pitfall #28: subprocess.run() blocks and cannot propagate cancellation. "
+                "When a scheduler cancels an activity/op (timeout, SIGTERM), the Metaflow step "
+                "subprocess becomes an orphan. "
+                "Fix: use subprocess.Popen(cmd) + proc.communicate() wrapped in a "
+                "BaseException handler that calls proc.terminate()/proc.kill(). "
+                "BaseException catches KeyboardInterrupt and threading cancellation."
+            ),
+        )
+
+    return _Check(
+        "Popen+communicate() used instead of subprocess.run()",
+        True,
+        "subprocess.run() not detected in step-executing context"
+        if not has_subprocess_run
+        else "subprocess.Popen() found (good)",
+    )
+
+
+def _check_retry_count_one_indexed(files: dict) -> _Check:
+    """Pitfall #27: scheduler attempt counters are 1-indexed; Metaflow uses 0-indexed.
+
+    Prefect run_count, Temporal attempt, Airflow try_number all start at 1.
+    Passing them directly as --retry-count gives the first attempt retry_count=1,
+    making @retry think it's already a retry. Must use max(0, counter - 1).
+    """
+    all_content = "\n".join(files.values())
+
+    # Check for patterns that suggest using a 1-indexed counter directly:
+    # retry_count = scheduler_counter  (without - 1 or max(0, ...))
+    # --retry-count", scheduler_counter  (without - 1)
+    bad_patterns = [
+        r'retry_count\s*=\s*\w+\.run_count\b(?!\s*-)',   # Prefect run_count
+        r'retry_count\s*=\s*\w+\.attempt\b(?!\s*-)',      # Temporal attempt
+        r'retry_count\s*=\s*\w+\.try_number\b(?!\s*-)',   # Airflow try_number
+        r'retry_count\s*=\s*attempt\b(?!\s*-)',
+        r'"--retry-count"\s*,\s*str\s*\(\s*\w+\.run_count\b',
+        r'"--retry-count"\s*,\s*str\s*\(\s*\w+\.attempt\b(?!\s*-)',
+    ]
+
+    for pat in bad_patterns:
+        if re.search(pat, all_content):
+            return _Check(
+                "retry_count uses max(0, counter - 1) (pitfall #27)",
+                False,
+                "1-indexed scheduler attempt counter used directly as --retry-count",
+                hint=(
+                    "Pitfall #27: Prefect run_count, Temporal attempt, Airflow try_number "
+                    "all start at 1 for the first execution. "
+                    "Metaflow's --retry-count is 0-indexed (0 = first attempt). "
+                    "Fix: retry_count = max(0, scheduler_counter - 1)"
+                ),
+            )
+
+    return _Check(
+        "retry_count uses max(0, counter - 1) (pitfall #27)",
+        True,
+        "no 1-indexed attempt counter used directly as retry_count",
+    )
+
+
+def _check_metaflow_parameters_env_not_used(files: dict) -> _Check:
+    """Pitfall #30: METAFLOW_PARAMETERS env var does not exist in OSS Metaflow.
+
+    Flow parameters must be passed to the init subcommand as individual CLI
+    flags (--param-name value), not as a JSON dict in METAFLOW_PARAMETERS or
+    as METAFLOW_INIT_<NAME> env vars. These are internal or non-existent.
+    """
+    all_content = "\n".join(files.values())
+
+    if re.search(r'METAFLOW_PARAMETERS', all_content):
+        return _Check(
+            "init parameters passed as CLI flags, not METAFLOW_PARAMETERS",
+            False,
+            "METAFLOW_PARAMETERS env var found — this does not exist in OSS Metaflow",
+            hint=(
+                "Pitfall #30: METAFLOW_PARAMETERS is not a real OSS Metaflow env var. "
+                "Flow parameters must be passed to the 'init' subcommand as CLI flags: "
+                "init_cmd += ['--param-name', str(value)]. "
+                "Filter out @Config params first (pitfall #20): "
+                "from metaflow.parameters import Config; "
+                "params = [(n, p) for n, p in flow._get_parameters() if not isinstance(p, Config)]"
+            ),
+        )
+
+    return _Check(
+        "init parameters passed as CLI flags, not METAFLOW_PARAMETERS",
+        True,
+        "METAFLOW_PARAMETERS not used",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main validation entry point
 # ---------------------------------------------------------------------------
@@ -1323,6 +1441,10 @@ def validate(directory: str) -> List[_Check]:
         _check_deployer_kwargs_backing_field(files),
         _check_branch_is_raw_not_formatted(files),
         _check_gha_coverage_artifact_unique(files),
+        # New checks from v2 gap analysis (pitfalls #27-#30)
+        _check_retry_count_one_indexed(files),
+        _check_subprocess_run_not_used_for_steps(files),
+        _check_metaflow_parameters_env_not_used(files),
     ]
     return checks
 
