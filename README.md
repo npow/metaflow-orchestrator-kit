@@ -3,7 +3,7 @@
 [![CI](https://github.com/npow/metaflow-orchestrator-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/npow/metaflow-orchestrator-kit/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/metaflow-orchestrator-kit)](https://pypi.org/project/metaflow-orchestrator-kit/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/) [![Docs](https://img.shields.io/badge/docs-mintlify-18a34a?style=flat-square)](https://mintlify.com/npow/metaflow-orchestrator-kit)
 
 Build a correct Metaflow orchestrator extension the first time — scaffold, validate, and prove compliance.
 
