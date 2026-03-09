@@ -39,6 +39,20 @@ class _Check:
 # ---------------------------------------------------------------------------
 
 
+
+def _find_in_any_file(files: dict, pattern: str = "") -> Optional[Tuple[str, str]]:
+    """Search across ALL extension files (deployer, compiler, cli, objects, etc.).
+    
+    Returns a virtual (path, combined_content) so checks find constants regardless
+    of which file they live in — e.g. METAFLOW_FLOW_CONFIG_VALUE may be in
+    _compiler.py rather than _deployer.py.
+    """
+    if not files:
+        return None
+    combined = "\n".join(content for content in files.values())
+    names = ", ".join(os.path.basename(p) for p in files)
+    return f"({names})", combined
+
 def _find_files(directory: str) -> dict:
     """Walk directory and return a dict of {relative_path: content}."""
     result = {}
@@ -211,7 +225,7 @@ def _check_run_params_list(files: dict) -> _Check:
 
 def _check_flow_config_value(files: dict) -> _Check:
     """METAFLOW_FLOW_CONFIG_VALUE must appear in step env setup."""
-    result = _find_deployer_file(files)
+    result = _find_in_any_file(files)
     if not result:
         return _Check(
             "METAFLOW_FLOW_CONFIG_VALUE in step env",
@@ -244,7 +258,7 @@ def _check_flow_config_value(files: dict) -> _Check:
 
 def _check_branch_in_step_command(files: dict) -> _Check:
     """--branch must be forwarded to step subprocesses."""
-    result = _find_deployer_file(files)
+    result = _find_in_any_file(files)
     if not result:
         return _Check(
             "--branch passed to step commands",
@@ -275,7 +289,7 @@ def _check_branch_in_step_command(files: dict) -> _Check:
 
 def _check_retry_count_not_hardcoded(files: dict) -> _Check:
     """retry_count must not be hardcoded to 0 in step command construction."""
-    result = _find_deployer_file(files)
+    result = _find_in_any_file(files)
     if not result:
         return _Check(
             "retry_count reads from attempt, not hardcoded to 0",
@@ -345,7 +359,7 @@ def _check_datastore_sysroot(files: dict) -> _Check:
     The fix: capture in _compile_workflow() / _get_datastore_sysroot(), not
     inside a step body or worker callback.
     """
-    result = _find_deployer_file(files)
+    result = _find_in_any_file(files)
     if not result:
         return _Check(
             "DATASTORE_SYSROOT captured at compile time",
@@ -407,7 +421,7 @@ def _check_datastore_sysroot(files: dict) -> _Check:
 
 def _check_environment_type(files: dict) -> _Check:
     """--environment must be passed to step command for @conda support."""
-    result = _find_deployer_file(files)
+    result = _find_in_any_file(files)
     if not result:
         return _Check(
             "ENVIRONMENT_TYPE passed to step command",
