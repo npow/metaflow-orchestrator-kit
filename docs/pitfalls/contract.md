@@ -120,3 +120,26 @@ raise NotSupportedException(
 # WRONG — too vague:
 raise NotSupportedException("Nested foreach not supported")
 ```
+
+---
+
+**#35 `@environment(vars={...})` decorator vars are set via `runtime_step_cli()` — not called for direct subprocess invocations**
+
+Metaflow's `@environment` decorator sets custom env vars via `runtime_step_cli()`. This hook is called by Metaflow's `LocalRuntime` (and cloud runtimes like K8s/Batch). **Subprocess-based orchestrators that call `python flow.py step <name> ...` directly do NOT invoke `runtime_step_cli()`**, so `@environment` vars are silently ignored.
+
+This means `@environment(vars={"TSTVAL": config_expr("str(cfg.some.value)")})` on a step will never set `TSTVAL` for flows deployed to Mage, Windmill, Prefect (process worker), etc.
+
+Fix: at compile time, iterate over each step's decorators, find `@environment`, evaluate its `vars` dict (using `str(value)` which evaluates `config_expr` objects), and inject them into the step's subprocess environment:
+
+```python
+# In your compiler's step env construction:
+for deco in step_node.decorators:
+    if deco.name == "environment":
+        for key, value in deco.attributes.get("vars", {}).items():
+            try:
+                env[key] = str(value)   # str() evaluates config_expr at compile time
+            except Exception:
+                pass
+```
+
+The `str()` call on a `config_expr` object evaluates the expression using the flow's compile-time config context. This requires configs to be populated (via `METAFLOW_CLICK_API_PROCESS_CONFIG=1` in the deployer subprocess environment).
