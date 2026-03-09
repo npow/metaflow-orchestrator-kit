@@ -398,6 +398,44 @@ for name, param in params_for_init:
         init_cmd += ["--%s" % name, str(run_kwargs[name])]
 ```
 
+**31. GHA `setup-miniconda` adds `condabin/` to PATH, not the full conda `bin/`** — `actions/setup-miniconda@v3` adds `/usr/share/miniconda/condabin` to `$PATH`. Metaflow's `@conda`/`@pypi` resolver (micromamba) is in the full `bin/` directory, not `condabin/`. Subprocess-based orchestrators (Dagster, Temporal) spawn worker subprocesses that inherit `os.environ`. Without the full `bin/` in PATH, `micromamba` is not found and `@conda` steps fail. Fix: add an explicit step in the GHA workflow before running tests:
+```yaml
+- name: Add conda bin to PATH for subprocess access
+  run: echo "/usr/share/miniconda/bin" >> $GITHUB_PATH
+```
+This ensures the full conda/micromamba `bin/` is visible to all subprocesses that inherit `os.environ`.
+
+**32. Parallel `@conda` tests share micromamba's repodata cache and cause SOLV corruption** — When multiple pytest workers run `@conda` tests concurrently (e.g. `-n 4`), all workers call `micromamba install` simultaneously. Micromamba writes SOLV repodata cache files to `~/.mamba/pkgs/cache/`. Concurrent writes to the same SOLV file corrupt it, causing one or more workers to fail with `libsolv` errors or silent empty environments. Fix: run tests from the same file on the same worker using `--dist=loadfile`. This keeps all `@conda` tests in `test_basic.py` on a single worker, running them sequentially:
+```yaml
+pytest-args: "-n 4 --dist=loadfile ..."
+```
+The comment in the GHA workflow should explain this:
+```yaml
+# --dist=loadfile keeps tests from the same file on the same worker so
+# @conda tests run sequentially on one worker, preventing micromamba
+# repodata SOLV file races between parallel workers.
+```
+
+**33. K8s task pod sysroot path differs from host path** — When Flyte, Argo, or other K8s-based orchestrators mount a shared volume (PVC) into task pods for local-datastore metadata, the in-pod mount path (e.g. `/var/lib/flyte/metaflow_meta`) differs from the host-side path to the same volume (e.g. `/var/lib/docker/volumes/flyte-sandbox/_data/metaflow_meta` on a GHA Linux runner). The deployer runs on the host and reads metadata using the host path; task containers write using the pod path. These must be configured independently:
+```yaml
+# GHA workflow:
+- name: Resolve host-side sysroot from Docker volume
+  run: |
+    DOCKER_VOL=$(docker volume inspect flyte-sandbox --format '{{ .Mountpoint }}')
+    echo "MF_HOST_SYSROOT=${DOCKER_VOL}/metaflow_meta" >> "$GITHUB_ENV"
+
+# Run tests using host-side sysroot:
+env:
+  METAFLOW_DATASTORE_SYSROOT_LOCAL: ${{ env.MF_HOST_SYSROOT }}
+
+# In the task pod (via PodTemplate or --envvars):
+METAFLOW_DATASTORE_SYSROOT_LOCAL=/var/lib/flyte/metaflow_meta  # container path
+```
+Also: `/var/lib/docker/volumes/` is root-owned on GHA. Make the metadata subdirectory world-writable so task pod containers (running as root) can write and the GHA runner user can read:
+```bash
+sudo chmod -R 777 "${DOCKER_VOL}/metaflow_meta"
+```
+
 ## Development
 
 ```bash

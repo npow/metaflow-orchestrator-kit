@@ -54,13 +54,17 @@ def _find_in_any_file(files: dict, pattern: str = "") -> Optional[Tuple[str, str
     return f"({names})", combined
 
 def _find_files(directory: str) -> dict:
-    """Walk directory and return a dict of {relative_path: content}."""
+    """Walk directory and return a dict of {relative_path: content}.
+
+    Includes both Python source files (.py) and GHA workflow YAML files
+    (.yml / .yaml) so GHA-specific checks can inspect workflow definitions.
+    """
     result = {}
     for root, dirs, files in os.walk(directory):
         # Skip hidden directories and __pycache__
         dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__pycache__"]
         for fname in files:
-            if fname.endswith(".py"):
+            if fname.endswith(".py") or fname.endswith(".yml") or fname.endswith(".yaml"):
                 fpath = os.path.join(root, fname)
                 try:
                     with open(fpath, "r", encoding="utf-8", errors="replace") as f:
@@ -1373,6 +1377,127 @@ def _check_retry_count_one_indexed(files: dict) -> _Check:
     )
 
 
+def _check_conda_bin_in_gha_path(files: dict) -> _Check:
+    """Pitfall #31: GHA setup-miniconda only adds condabin/ to PATH, not full conda bin/.
+
+    `actions/setup-miniconda@v3` (or v2) adds `/usr/share/miniconda/condabin` to
+    $PATH, but Metaflow's @conda resolver needs `micromamba` or `mamba` from the
+    full conda `bin/` directory.  Subprocess-based orchestrators (Dagster, Temporal)
+    spawn worker processes that inherit `os.environ`, so without the full bin/ in PATH
+    the @conda step resolver fails for all workers.
+
+    Detection: scan GHA workflow YAML files for setup-miniconda without a step that
+    adds the conda bin directory to GITHUB_PATH.
+    """
+    # Scan YAML files included in directory scan (caller may include .yml/.yaml).
+    yaml_content = "\n".join(
+        content for path, content in files.items()
+        if path.endswith((".yml", ".yaml"))
+    )
+    if not yaml_content:
+        return _Check(
+            "GHA conda bin/ added to PATH (pitfall #31)",
+            True,
+            "no GHA workflow YAML files found — skipped",
+        )
+
+    has_setup_miniconda = bool(re.search(r'setup-miniconda', yaml_content, re.IGNORECASE))
+    if not has_setup_miniconda:
+        return _Check(
+            "GHA conda bin/ added to PATH (pitfall #31)",
+            True,
+            "setup-miniconda not used — skipped",
+        )
+
+    has_conda_bin_path = bool(
+        re.search(r'miniconda.*bin.*GITHUB_PATH', yaml_content) or
+        re.search(r'GITHUB_PATH.*miniconda.*bin', yaml_content) or
+        re.search(r'echo.*miniconda/bin.*GITHUB_PATH', yaml_content) or
+        re.search(r'GITHUB_PATH.*conda.*bin', yaml_content, re.IGNORECASE)
+    )
+    if has_conda_bin_path:
+        return _Check(
+            "GHA conda bin/ added to PATH (pitfall #31)",
+            True,
+            "conda bin/ added to GITHUB_PATH found",
+        )
+
+    return _Check(
+        "GHA conda bin/ added to PATH (pitfall #31)",
+        False,
+        "setup-miniconda used but no step adds the full conda bin/ to GITHUB_PATH",
+        hint=(
+            "Pitfall #31: setup-miniconda@v3 only adds condabin/ to PATH, not the full conda bin/. "
+            "Metaflow's @conda resolver needs micromamba/mamba from the full bin/ directory. "
+            "Add this step before running tests:\n"
+            "  - name: Add conda bin to PATH for subprocess access\n"
+            "    run: echo \"/usr/share/miniconda/bin\" >> $GITHUB_PATH"
+        ),
+    )
+
+
+def _check_dist_loadfile_for_conda_tests(files: dict) -> _Check:
+    """Pitfall #32: Parallel @conda tests corrupt micromamba's SOLV repodata cache.
+
+    When multiple pytest workers run @conda tests concurrently (e.g. -n 4), all
+    workers call micromamba install simultaneously. Micromamba writes SOLV repodata
+    cache files to ~/.mamba/pkgs/cache/. Concurrent writes to the same SOLV file
+    corrupt it, causing one or more workers to fail with libsolv errors.
+
+    Fix: use --dist=loadfile so tests from the same file run on the same worker
+    (keeping @conda tests sequential on one worker).
+
+    Detection: scan GHA workflow YAML for pytest -n without --dist=loadfile when
+    @conda tests are involved.
+    """
+    yaml_content = "\n".join(
+        content for path, content in files.items()
+        if path.endswith((".yml", ".yaml"))
+    )
+    if not yaml_content:
+        return _Check(
+            "parallel @conda tests use --dist=loadfile (pitfall #32)",
+            True,
+            "no GHA workflow YAML files found — skipped",
+        )
+
+    # Only flag if conda tests are enabled (conda: true or @conda in test config)
+    has_conda_enabled = bool(
+        re.search(r'conda.*true', yaml_content, re.IGNORECASE) or
+        re.search(r'@conda', yaml_content)
+    )
+    if not has_conda_enabled:
+        return _Check(
+            "parallel @conda tests use --dist=loadfile (pitfall #32)",
+            True,
+            "no @conda tests enabled — skipped",
+        )
+
+    # Check if parallel execution is used (-n <N>) without --dist=loadfile
+    has_parallel = bool(re.search(r'-n\s+[2-9]\d*', yaml_content))
+    has_dist_loadfile = bool(re.search(r'--dist=loadfile', yaml_content))
+
+    if has_parallel and not has_dist_loadfile:
+        return _Check(
+            "parallel @conda tests use --dist=loadfile (pitfall #32)",
+            False,
+            "parallel pytest (-n N) used with @conda tests but --dist=loadfile not found",
+            hint=(
+                "Pitfall #32: concurrent @conda test workers corrupt micromamba's SOLV repodata "
+                "cache files. Add --dist=loadfile to pytest args:\n"
+                "  pytest-args: \"-n 4 --dist=loadfile ...\"\n"
+                "This keeps tests from the same file on the same worker so @conda tests run "
+                "sequentially, preventing micromamba repodata SOLV file races."
+            ),
+        )
+
+    return _Check(
+        "parallel @conda tests use --dist=loadfile (pitfall #32)",
+        True,
+        "--dist=loadfile found or parallel @conda not detected",
+    )
+
+
 def _check_metaflow_parameters_env_not_used(files: dict) -> _Check:
     """Pitfall #30: METAFLOW_PARAMETERS env var does not exist in OSS Metaflow.
 
@@ -1441,10 +1566,13 @@ def validate(directory: str) -> List[_Check]:
         _check_deployer_kwargs_backing_field(files),
         _check_branch_is_raw_not_formatted(files),
         _check_gha_coverage_artifact_unique(files),
-        # New checks from v2 gap analysis (pitfalls #27-#30)
+        # Checks from v2 gap analysis (pitfalls #27-#30)
         _check_retry_count_one_indexed(files),
         _check_subprocess_run_not_used_for_steps(files),
         _check_metaflow_parameters_env_not_used(files),
+        # Checks from v3 gap analysis (pitfalls #31-#32)
+        _check_conda_bin_in_gha_path(files),
+        _check_dist_loadfile_for_conda_tests(files),
     ]
     return checks
 
