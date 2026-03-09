@@ -762,6 +762,70 @@ def _check_scheduler_api_optional(files: dict) -> _Check:
     )
 
 
+def _check_not_supported_has_reason(files: dict) -> _Check:
+    """NotSupportedException must include an architectural reason, not just 'not supported'."""
+    # Keywords that indicate a real architectural explanation
+    ARCHITECTURAL_KEYWORDS = [
+        "because", "requires", "cannot", "does not support",
+        "architecture", "model", "static", "runtime",
+    ]
+    # Vague-only phrases that fail even if they're long enough
+    VAGUE_ONLY = re.compile(
+        r'^[\s"\']*'
+        r'(not supported|todo|not implemented|unsupported|n/a|tbd)'
+        r'[\s"\'\.]*$',
+        re.IGNORECASE,
+    )
+
+    vague_calls = []
+    all_content = "\n".join(files.values())
+
+    # Find raise NotSupportedException(...) and pytest.skip(...) with their message text
+    patterns = [
+        re.compile(r'raise\s+NotSupportedException\s*\(\s*(["\'])(.*?)\1\s*\)', re.DOTALL),
+        re.compile(r'pytest\.skip\s*\(\s*(["\'])(.*?)\1\s*\)', re.DOTALL),
+    ]
+
+    for pat in patterns:
+        for m in pat.finditer(all_content):
+            msg = m.group(2).strip()
+            # Check length
+            if len(msg) < 50:
+                vague_calls.append(msg[:80])
+                continue
+            # Check it's not purely a vague phrase
+            if VAGUE_ONLY.match(msg):
+                vague_calls.append(msg[:80])
+                continue
+            # Must contain at least one architectural keyword
+            lower_msg = msg.lower()
+            if not any(kw in lower_msg for kw in ARCHITECTURAL_KEYWORDS):
+                vague_calls.append(msg[:80])
+
+    if vague_calls:
+        examples = "; ".join(repr(v) for v in vague_calls[:3])
+        return _Check(
+            "NotSupportedException has architectural reason",
+            False,
+            f"vague NotSupportedException or pytest.skip message(s): {examples}",
+            hint=(
+                "Explain WHY architecturally, not just that it's not supported. "
+                "The message must be longer than 50 chars and contain at least one of: "
+                "'because', 'requires', 'cannot', 'does not support', 'architecture', "
+                "'model', 'static', 'runtime'. "
+                "Example: \"Nested foreach requires dynamic task creation at runtime. "
+                "<Scheduler>'s DAG is defined statically at compile time and cannot "
+                "express a foreach body that is itself a foreach.\""
+            ),
+        )
+
+    return _Check(
+        "NotSupportedException has architectural reason",
+        True,
+        "all NotSupportedException and pytest.skip calls include architectural reasons (or none found)",
+    )
+
+
 def _check_from_deployment_dotted(files: dict) -> _Check:
     """from_deployment must use identifier.split('.')[-1]."""
     result = _find_objects_file(files)
@@ -830,6 +894,7 @@ def validate(directory: str) -> List[_Check]:
         _check_pythonpath_no_extension_package(files),
         _check_scheduler_api_optional(files),
         _check_from_deployment_dotted(files),
+        _check_not_supported_has_reason(files),
     ]
     return checks
 

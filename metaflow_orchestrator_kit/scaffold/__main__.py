@@ -73,6 +73,26 @@ OrchestratorCapabilities contract (DO NOT remove these comments):
                         identifier.split(".")[-1]
 
 See metaflow_orchestrator_kit.capabilities for the full list.
+
+IMPORTANT — NotSupportedException requires an architectural reason:
+
+  If a capability is genuinely not expressible in your scheduler, raise
+  NotSupportedException with a clear explanation of WHY:
+
+    raise NotSupportedException(
+        "Nested foreach requires dynamic task creation at runtime. "
+        "{name}\'s pipeline graph is defined statically at compile time "
+        "and cannot express a foreach body that is itself a foreach. "
+        "Step *%s* contains a nested foreach step *%s*." % (step_name, body_step)
+    )
+
+  NOT this (too vague — the validator will fail):
+    raise NotSupportedException("Nested foreach not supported")
+
+  The message must be longer than 50 characters and explain the architectural
+  constraint (keyword: because / requires / cannot / static / runtime / model).
+  If you cannot state an architectural reason, it is probably not a genuine
+  limitation — just functionality that hasn\'t been implemented yet.
 """
 
 import json

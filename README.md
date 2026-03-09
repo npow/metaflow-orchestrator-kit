@@ -275,6 +275,20 @@ except Exception:
     schedule_id = None  # non-fatal
 ```
 
+**18. `NotSupportedException` must document an architectural reason** — Raising `NotSupportedException` with a vague message like `"not supported"` or `"TODO: implement"` obscures whether the limitation is genuine or lazy. The validator checks that all `NotSupportedException` and `pytest.skip` calls include an architectural explanation (minimum 50 chars, with a keyword such as `because`, `requires`, `cannot`, `static`, `runtime`, or `model`). The message should answer: *What property of the scheduler's execution model prevents this?* If you cannot answer that, it is probably not a genuine limitation.
+
+```python
+# Correct — explains the architectural constraint:
+raise NotSupportedException(
+    "Nested foreach requires dynamic task creation at runtime. "
+    "MyScheduler's pipeline graph is defined statically at compile time "
+    "and cannot express a foreach body that is itself a foreach."
+)
+
+# Wrong — too vague, will fail the validator:
+raise NotSupportedException("Nested foreach not supported")
+```
+
 ## Development
 
 ```bash
