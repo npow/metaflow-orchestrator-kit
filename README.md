@@ -289,6 +289,39 @@ raise NotSupportedException(
 raise NotSupportedException("Nested foreach not supported")
 ```
 
+**19. `--branch` must receive the raw user string, not the formatted project branch name (`Cap.PROJECT_BRANCH`)** — `@project`'s `format_name()` converts a raw branch input (e.g. `abc123`) into a formatted name (e.g. `test.abc123`). Metaflow's `--branch` CLI option applies `format_name()` internally. If you pass the already-formatted string `test.abc123` to `--branch`, format_name rejects it:
+
+```
+format_name: 'branch' must contain only lowercase alphanumeric characters and underscores
+```
+
+Fix: use `self.branch` (the raw input) as the `--branch` argument, not `self._project_info["branch"]` or `branch_name`.
+
+**20. `@Config` params must not be passed to the `init` command** — `flow._get_parameters()` returns both `@Parameter` and `@Config` objects. Only `@Parameter` values belong in the `init` command CLI args; `@Config` values are already baked into `METAFLOW_FLOW_CONFIG_VALUE` at compile time. Passing a `@Config` name to `init` causes `Error: no such option: --cfg`. Fix: filter out `Config` instances before building init args:
+```python
+from metaflow.parameters import Config
+params = [p for p in flow._get_parameters() if not isinstance(p, Config)]
+```
+
+**21. `deployer_kwargs` must be stored in `_deployer_kwargs` backing field** — `DeployerImpl` exposes `deployer_kwargs` as a read-only property. Assigning `self.deployer_kwargs = deployer_kwargs` in `__init__` raises `AttributeError` or silently shadows the property. Fix: store in the backing field `self._deployer_kwargs = deployer_kwargs` and add a `@property` that returns it (the scaffold pre-solves this).
+
+**22. GHA matrix jobs produce conflicting coverage artifact names** — When a matrix strategy runs multiple deployer-test jobs in parallel and each uploads a coverage artifact with the same name (e.g. `coverage-deployer-tests`), GitHub returns HTTP 409. Fix: append a unique per-job suffix to each artifact name:
+```yaml
+- uses: actions/upload-artifact@v4
+  with:
+    name: coverage-${{ matrix.test }}   # unique per matrix cell
+```
+
+**23. `METAFLOW_DATASTORE_SYSROOT_LOCAL` baked at compile time must not be overridden at runtime** — For schedulers that run steps inside Docker containers, the container may have `METAFLOW_DATASTORE_SYSROOT_LOCAL` set to a different value (e.g. `$HOME`) from its own environment. If the step script re-reads this env var at runtime and overrides the compile-time sysroot, the metadata ends up at a different path than the deployer expects, and `wait_for_deployed_run()` never finds the run. Fix: treat the compile-time sysroot as authoritative. Do not let container env vars override it in step scripts:
+```python
+# WRONG — lets container env override compile-time sysroot:
+sysroot = os.environ.get("METAFLOW_DATASTORE_SYSROOT_LOCAL") or COMPILED_SYSROOT
+# CORRECT — use compile-time value, then set env for the subprocess:
+env["METAFLOW_DATASTORE_SYSROOT_LOCAL"] = os.path.dirname(DATASTORE_ROOT)
+```
+
+**24. Template engines that process `{` in env values** — Schedulers that use template engines (Kestra/Pebble, Jinja2, Mustache) to render step scripts will try to evaluate `{{ ... }}` inside env var values. `METAFLOW_FLOW_CONFIG_VALUE` contains JSON with `{` characters which will be misinterpreted as template expressions. Fix: escape braces or pass the config value through a scheduler variable/secret rather than inlining the JSON directly in the rendered script.
+
 ## Development
 
 ```bash

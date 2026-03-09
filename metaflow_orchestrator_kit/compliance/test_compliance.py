@@ -458,6 +458,76 @@ def test_conda_packages_available(
 
 @pytest.mark.compliance
 @pytest.mark.scheduler_only
+def test_config_params_excluded_from_init(
+    exec_mode, decospecs, compute_env, tag, scheduler_config
+):
+    """@Config params must not be passed to the init command.
+
+    WHY: flow._get_parameters() returns both @Parameter and @Config objects.
+    Only @Parameter values belong in the init command CLI args; @Config values
+    are baked into METAFLOW_FLOW_CONFIG_VALUE at compile time.  If the deployer
+    passes @Config names to init, Metaflow rejects them:
+        Error: no such option: --cfg
+
+    config_simple.py has two @Config params (cfg, cfg_default_value) and one
+    @Parameter (trigger_param).  If the init command receives --cfg or
+    --cfg_default_value, it fails immediately with an unrecognised option error,
+    and the entire run never starts.
+
+    Capability: Cap.CONFIG_EXPR (REQUIRED)
+    """
+    if exec_mode != "deployer":
+        pytest.skip("compliance test requires deployer mode")
+
+    trigger_param = str(uuid.uuid4())[:8]
+    test_unique_tag = f"test_compliance_config_init_{exec_mode}"
+    combined_tags = tag + [test_unique_tag]
+
+    # Use a @Config override so flow._get_parameters() has both @Config and @Parameter
+    config_value = [
+        ("cfg_default_value", {"a": {"project_name": "init_test_project", "b": "77"}})
+    ]
+
+    tl_args = {
+        "env": {
+            "METAFLOW_CLICK_API_PROCESS_CONFIG": "1",
+            **compute_env,
+        },
+        "package_suffixes": ".py,.json",
+        "config_value": config_value,
+        "decospecs": decospecs,
+    }
+
+    # If init receives --cfg or --cfg_default_value, it fails with:
+    #   Error: no such option: --cfg
+    # causing deploy_flow_to_scheduler to raise immediately.
+    deployed_flow = deploy_flow_to_scheduler(
+        flow_name="config/config_simple.py",
+        tl_args=tl_args,
+        scheduler_args={"cluster": scheduler_config.cluster},
+        deploy_args={"tags": combined_tags, **(scheduler_config.deploy_args or {})},
+        scheduler_type=scheduler_config.scheduler_type,
+    )
+
+    run = wait_for_deployed_run(
+        deployed_flow, run_kwargs={"trigger_param": trigger_param}
+    )
+
+    assert run.successful, (
+        "Run was not successful.  If the failure occurred at init, the deployer may have "
+        "passed @Config parameter names (--cfg, --cfg_default_value) to the init command. "
+        "Filter them out: from metaflow.parameters import Config; "
+        "params = [p for p in flow._get_parameters() if not isinstance(p, Config)]"
+    )
+    end_task = run["end"].task
+    assert end_task.data.config_val_2 == "77", (
+        f"config_val_2 should be '77' (from @Config override), got {end_task.data.config_val_2!r}. "
+        "METAFLOW_FLOW_CONFIG_VALUE may not have been propagated."
+    )
+
+
+@pytest.mark.compliance
+@pytest.mark.scheduler_only
 def test_from_deployment_dotted_name(
     exec_mode, decospecs, compute_env, tag, scheduler_config
 ):

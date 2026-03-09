@@ -220,9 +220,25 @@ class {classname}DeployerImpl(DeployerImpl):
         required_env = {{
             # REQUIRED (Cap.CONFIG_EXPR): propagate config to step subprocesses.
             # Without this, @config/@project decorators use empty/default values.
+            #
+            # TEMPLATE ENGINE WARNING: This value is a JSON string containing {{ }}.
+            # Schedulers that use template engines (Kestra/Pebble, Jinja2, Mustache,
+            # Windmill) will try to evaluate {{ ... }} inside this value and fail.
+            # Fix: pass the config value through a scheduler variable/secret rather
+            # than inlining the JSON directly in a rendered template:
+            #   Kestra: define as a flow variable and reference via {{ vars.MFCFG }}
+            #   Jinja2: use {% raw %}...{% endraw %} around the value
+            #   Prefect: pass as an environment variable on the infrastructure block
             "METAFLOW_FLOW_CONFIG_VALUE": flow_config_value or "",
 
             # REQUIRED: sysroot pinned at compile time.
+            # IMPORTANT: Do NOT let the container's own METAFLOW_DATASTORE_SYSROOT_LOCAL
+            # env var override this value at runtime.  The container may have a different
+            # $HOME or sysroot set, causing metadata to be written to a path the
+            # deployer cannot find, and wait_for_deployed_run() polls forever.
+            # The compile-time value must be authoritative.  In step scripts, set it
+            # explicitly for the subprocess rather than re-reading from container env:
+            #   env["METAFLOW_DATASTORE_SYSROOT_LOCAL"] = os.path.dirname(DATASTORE_ROOT)
             "METAFLOW_DATASTORE_SYSROOT_LOCAL": datastore_sysroot,
 
             # REQUIRED: Metaflow metadata service URL reachable from the worker.
@@ -271,6 +287,15 @@ class {classname}DeployerImpl(DeployerImpl):
         #      DO NOT pass --run-param to init: that flag is NFLX-only and does not
         #      exist in OSS Metaflow.  Parameters in OSS are resolved during step
         #      execution, not during init.
+        #
+        #      @CONFIG PARAMS must NOT be passed to init.  flow._get_parameters()
+        #      returns both @Parameter and @Config objects.  Only @Parameter values
+        #      belong in the init command CLI args; @Config values are baked into
+        #      METAFLOW_FLOW_CONFIG_VALUE.  Filter before building init args:
+        #          from metaflow.parameters import Config
+        #          params = [p for p in flow._get_parameters() if not isinstance(p, Config)]
+        #      Passing @Config names to init causes: Error: no such option: --cfg
+        #
         #   3. For each step: the command (see _build_step_command below)
         #   4. required_env injected into every step container/process env
         #   5. branch stored so it can be passed to each step command
@@ -400,6 +425,15 @@ class {classname}DeployerImpl(DeployerImpl):
         if branch:
             # REQUIRED (Cap.PROJECT_BRANCH): DO NOT REMOVE — forward --branch to
             # every step subprocess so @project reads the correct branch_name.
+            #
+            # IMPORTANT: pass the RAW user-provided branch string (e.g. "abc123"),
+            # NOT the formatted project name (e.g. "test.abc123").
+            # Metaflow's --branch option calls format_name() internally.
+            # Passing a pre-formatted string (with dots) causes:
+            #   format_name: 'branch' must contain only lowercase alphanumeric
+            #   characters and underscores
+            # Use `branch` (the raw input), not `self._project_info["branch"]`
+            # or any string that has already had format_name() applied.
             cmd += ["--branch", branch]
 
         # IMPORTANT: --tag must come AFTER the "step" subcommand, not before it.
@@ -819,6 +853,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
+          # NOTE: artifact names MUST be unique per matrix job.
+          # If multiple matrix jobs upload to the same name, GitHub returns
+          # HTTP 409 (Conflict) and the upload silently fails.
+          # Use matrix.backend (or matrix.test) as the suffix here — each cell
+          # in the matrix strategy gets a different value.
           name: coverage-${{ matrix.backend }}
           path: coverage.xml
           if-no-files-found: ignore
