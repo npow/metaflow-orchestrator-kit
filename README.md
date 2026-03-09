@@ -119,13 +119,13 @@ After `pip install -e .`, `Deployer(flow_file).my_scheduler(...)` is available w
 | `Cap.CONFIG_EXPR` | `METAFLOW_FLOW_CONFIG_VALUE` injected into every container/subprocess |
 | `Cap.RUN_PARAMS` | `trigger()` run params as list, not tuple |
 | `Cap.FROM_DEPLOYMENT` | `from_deployment(identifier)` handles dotted names (`project.branch.FlowName`) |
+| `Cap.CONDA` | `@conda` environment creation at task runtime; passes `--environment conda` to step subprocesses |
 
 ### Optional — implement or explicitly declare unsupported
 
 | Capability | What it means |
 |---|---|
 | `Cap.NESTED_FOREACH` | `foreach` inside `foreach` |
-| `Cap.CONDA` | `@conda` environment creation at task runtime |
 | `Cap.RESUME` | `ORIGIN_RUN_ID` resume: re-run from a previously failed step |
 | `Cap.SCHEDULE` | `@schedule` cron trigger |
 

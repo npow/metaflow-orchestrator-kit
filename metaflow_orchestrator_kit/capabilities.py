@@ -96,6 +96,19 @@ class Cap(Enum):
     string raises SyntaxError.
     """
 
+    CONDA = auto()
+    """
+    @conda environment creation at task runtime; passes --environment conda to
+    step subprocesses.
+
+    For subprocess-based orchestrators, passing --environment conda to the step
+    command is sufficient: Metaflow's runtime_init() activates the environment
+    automatically.  For in-process executors (Dagster execute_job(), Windmill
+    sync functions), wrap the step command with 'conda run -n <env_name>'.
+    An orchestrator that silently ignores @conda runs steps with the wrong
+    Python packages, causing data correctness issues.
+    """
+
     # ------------------------------------------------------------------
     # OPTIONAL — implement or explicitly declare unsupported.
     # The compliance suite will SKIP tests for capabilities not in the
@@ -104,9 +117,6 @@ class Cap(Enum):
 
     NESTED_FOREACH = auto()
     """foreach inside foreach — not supported by all orchestrators."""
-
-    CONDA = auto()
-    """@conda environment creation at task runtime."""
 
     RESUME = auto()
     """ORIGIN_RUN_ID resume: re-run from a previously failed step."""
@@ -128,13 +138,13 @@ REQUIRED: frozenset = frozenset(
         Cap.CONFIG_EXPR,
         Cap.RUN_PARAMS,
         Cap.FROM_DEPLOYMENT,
+        Cap.CONDA,
     }
 )
 
 OPTIONAL: frozenset = frozenset(
     {
         Cap.NESTED_FOREACH,
-        Cap.CONDA,
         Cap.RESUME,
         Cap.SCHEDULE,
     }

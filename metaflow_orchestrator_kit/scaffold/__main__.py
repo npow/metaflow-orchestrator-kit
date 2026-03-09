@@ -72,6 +72,15 @@ OrchestratorCapabilities contract (DO NOT remove these comments):
                         (project.branch.FlowName).  Use only the last component:
                         identifier.split(".")[-1]
 
+  Cap.CONDA          — REQUIRED: pass --environment conda (or the environment_type
+                       value) to every step subprocess so @conda steps activate
+                       the correct Python environment.
+                       Approach A (subprocess-based): --environment conda is enough;
+                       Metaflow\'s runtime_init() handles activation automatically.
+                       Approach B (in-process executors): wrap the step command with
+                       conda run -n <env_name> python ...
+                       See _build_step_command docstring for full details.
+
 See metaflow_orchestrator_kit.capabilities for the full list.
 
 IMPORTANT — NotSupportedException requires an architectural reason:
@@ -327,7 +336,7 @@ class {classname}DeployerImpl(DeployerImpl):
         REQUIRED (environment_type):
             Pass --environment so the correct Python is used for @conda flows.
 
-        OPTIONAL (Cap.CONDA) — two approaches depending on executor type:
+        REQUIRED (Cap.CONDA) — two approaches depending on executor type:
 
         APPROACH A — subprocess-based orchestrators (standard):
             Pass --environment conda (or whatever environment_type is).

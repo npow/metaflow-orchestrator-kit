@@ -379,7 +379,7 @@ def test_nested_foreach_or_skip(
 # because a step could succeed while silently importing the system regex instead
 # of the conda-env regex (e.g. if the system also has regex installed).
 #
-# Capability: Cap.CONDA (OPTIONAL)
+# Capability: Cap.CONDA (REQUIRED)
 # ---------------------------------------------------------------------------
 
 
@@ -397,12 +397,6 @@ def test_conda_packages_available(
     """
     if exec_mode != "deployer":
         pytest.skip("compliance test requires deployer mode")
-
-    _require_cap(
-        scheduler_config,
-        Cap.CONDA,
-        unsupported_schedulers={},  # no known-unsupported schedulers for conda
-    )
 
     test_unique_tag = f"test_compliance_conda_{exec_mode}"
     combined_tags = tag + [test_unique_tag]
