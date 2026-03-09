@@ -113,3 +113,25 @@ Without it, the step subprocess fails with `UnboundLocalError`. Never pass an em
 --input-paths "${run_id}/{parent_step}/1"                           # linear steps
 --input-paths "${run_id}/branch_a/1,${run_id}/branch_b/1"          # join steps (comma-sep)
 ```
+
+---
+
+**#34 Internal metadata/datastore types leak into container step commands**
+
+`metadata.TYPE` and `flow_datastore.TYPE` at compile time may return internal types (e.g. `mli`, `nflx_s3`) that aren't installed in task containers. Baking these into step commands (`--metadata mli`) causes `Error: invalid choice: mli`.
+
+Fix: either hardcode `local` for local-datastore CI testing, or check that the types are available in the container environment before baking them in:
+
+```python
+# WRONG — blindly uses whatever the dev environment has:
+metadata_type = metadata.TYPE           # may return 'mli' in internal forks
+datastore_type = flow_datastore.TYPE    # may return 'nflx_s3'
+
+# CORRECT for containers — default to portable types:
+_PORTABLE_METADATA = {"local", "service"}
+_PORTABLE_DATASTORES = {"local", "s3", "azure", "gs"}
+metadata_type = metadata.TYPE if metadata.TYPE in _PORTABLE_METADATA else "local"
+datastore_type = flow_datastore.TYPE if flow_datastore.TYPE in _PORTABLE_DATASTORES else "local"
+```
+
+For remote Flyte/K8s execution: use `--datastore s3` and an in-cluster MinIO/S3-compatible endpoint — local datastore doesn't work across pods.
