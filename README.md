@@ -5,36 +5,43 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 
-Build a correct Metaflow orchestrator the first time — scaffold, declare capabilities, and prove compliance.
+Build a correct Metaflow orchestrator extension the first time — scaffold, validate, and prove compliance.
 
 ## The problem
 
-You want to integrate a new scheduler with Metaflow. You know you need to implement a `DeployerImpl`, a `DeployedFlow`, and a `TriggeredRun`. But Metaflow's orchestrator contract is not written down anywhere. There is no spec listing what your deployer must handle, no test suite to run against your implementation, and no scaffold to get you started. You figure it out by reading existing orchestrator code and hitting a handful of non-obvious bugs that every new orchestrator author rediscovers independently: retry counts hardcoded to zero, `--branch` missing from step subprocesses, config env vars absent from containers. This kit is the missing artifact: a written contract, a compliance test suite you can run locally, and a scaffold that pre-fills every requirement so none of them are easy to skip.
+You want to integrate a new scheduler with Metaflow. You know you need a `DeployerImpl`, a `DeployedFlow`, and a `TriggeredRun` — but the contract is nowhere written down. No spec lists what your deployer must handle. No test suite validates your implementation. You figure it out by reading existing orchestrators and rediscovering the same handful of non-obvious bugs every author hits: retry counts hardcoded to zero, `--branch` missing from step subprocesses, config env vars absent from containers, `run_params` passed as a tuple.
+
+This kit is the missing artifact: a written contract, a scaffold that pre-fills every requirement, a static validator that catches mistakes before CI, and a compliance test suite you can run against a live scheduler.
+
+## Install
+
+```bash
+pip install metaflow-orchestrator-kit
+# with dev dependencies:
+pip install "metaflow-orchestrator-kit[dev]"
+```
 
 ## 5-minute quickstart
 
 ```bash
-# 1. Install
-pip install metaflow-orchestrator-kit
-
-# 2. Scaffold
+# 1. Scaffold
 python -m metaflow_orchestrator_kit.scaffold my_scheduler
 cd my_scheduler/
 
-# 3. Fill in the scheduler-specific parts (all marked with # TODO: SCHEDULER API)
+# 2. Fill in the scheduler-specific parts (all marked # TODO: SCHEDULER API)
 #    - my_scheduler_deployer.py: _compile_workflow(), _build_step_command()
 #    - my_scheduler_objects.py:  trigger(), from_deployment(), status property
 #    - my_scheduler_cli.py:      create(), trigger()
 
-# 4. Validate (catches all known pitfalls without running tests)
+# 3. Validate (static analysis — no scheduler needed)
 python -m metaflow_orchestrator_kit.validate ./
 
-# 5. Test (one command — writes config, finds flows, runs compliance suite)
+# 4. Test (one command — writes config, finds flows, runs compliance suite)
 python -m metaflow_orchestrator_kit.test \
   --scheduler-type my_scheduler \
   --deploy-args host=http://localhost:8000
 
-# 6. If all green: set up GHA with the generated ux-tests-my_scheduler.yml
+# 5. If all green: commit the generated ux-tests-my_scheduler.yml to your repo
 ```
 
 ## What the scaffold generates
@@ -48,12 +55,12 @@ Creates `./my_scheduler/` containing:
 ```
 my_scheduler_deployer.py    DeployerImpl subclass — all required plumbing pre-solved
 my_scheduler_objects.py     DeployedFlow / TriggeredRun subclasses
-my_scheduler_cli.py         CLI entry-point group
+my_scheduler_cli.py         CLI entry-point group (create, trigger)
 mfextinit_my_scheduler.py   Extension registration (auto-discovered by Metaflow)
 ux-tests-my_scheduler.yml   GitHub Actions workflow skeleton
 ```
 
-The generated `_build_step_command()` includes all pre-solved Metaflow plumbing. You fill in only the scheduler API calls:
+The generated `_build_step_command()` has all Metaflow plumbing pre-solved. You fill in only the scheduler API calls:
 
 ```python
 # Generated deployer — pre-solved (do not change these)
@@ -75,244 +82,25 @@ def _build_step_command(self, step_name, run_id, task_id, input_paths,
     return cmd
 ```
 
-## Install
-
-```bash
-pip install metaflow-orchestrator-kit
-# with dev dependencies:
-pip install "metaflow-orchestrator-kit[dev]"
-```
-
-## Usage
-
-### 1. Scaffold
-
-```bash
-python -m metaflow_orchestrator_kit.scaffold my_scheduler [output_dir]
-# equivalent short form:
-metaflow-orchestrator-scaffold my_scheduler
-```
-
-### 2. Validate (static analysis — no scheduler needed)
-
-```bash
-python -m metaflow_orchestrator_kit.validate ./my_scheduler/
-# equivalent:
-metaflow-orchestrator-validate ./my_scheduler/
-```
-
-Example output:
-
-```
-Validating: /path/to/my_scheduler/
-
-  PASS  mfextinit_<name>.py exists
-  PASS  DEPLOYER_IMPL_PROVIDERS_DESC has correct structure
-  PASS  run_params uses list() not tuple()
-  FAIL  METAFLOW_FLOW_CONFIG_VALUE in step env
-        Problem: METAFLOW_FLOW_CONFIG_VALUE not found in my_scheduler_deployer.py
-        Fix: Extract at compile time: from metaflow.flowspec import FlowStateItems; ...
-  PASS  --branch passed to step commands
-  PASS  retry_count reads from attempt, not hardcoded to 0
-  PASS  DATASTORE_SYSROOT captured at compile time
-  PASS  ENVIRONMENT_TYPE passed to step command
-  PASS  from_deployment handles dotted names
-
-Results: 8 passed, 1 failed
-```
-
-### 3. Test (one-command compliance suite)
-
-```bash
-python -m metaflow_orchestrator_kit.test \
-  --scheduler-type my_scheduler \
-  --deploy-args host=http://localhost:8000,token=abc123
-
-# Full options:
-python -m metaflow_orchestrator_kit.test \
-  --scheduler-type windmill \
-  --deploy-args windmill_host=http://localhost:8000,windmill_token=abc123 \
-  --metaflow-src /path/to/metaflow \
-  --test-modules compliance,basic,config,dag \
-  --workers 4
-# equivalent:
-metaflow-orchestrator-test --scheduler-type windmill --deploy-args ...
-```
-
-This command:
-1. Writes `ux_test_config_generated.yaml` automatically
-2. Finds the test flows (from installed metaflow or from `--metaflow-src`)
-3. Runs the compliance tests
-4. Reports a clear pass/fail summary
-
-### 4. Declare capabilities
-
-```python
-from metaflow_orchestrator_kit import Cap, REQUIRED
-
-# REQUIRED is the minimum set every orchestrator must pass.
-# Add optional capabilities your scheduler actually supports.
-SUPPORTED_CAPABILITIES = REQUIRED | {Cap.NESTED_FOREACH, Cap.SCHEDULE}
-```
-
-### 5. Wire compliance into CI
-
-```yaml
-- name: Run compliance tests
-  run: |
-    python -m metaflow_orchestrator_kit.test \
-      --scheduler-type my_scheduler \
-      --deploy-args host=${{ secrets.SCHEDULER_HOST }}
-```
-
-Or use the generated `ux-tests-my_scheduler.yml` as a starting point.
-
 ## Extension package layout
+
+Once you're ready to publish, place the generated files in the proper namespace package structure:
 
 ```
 your_package/
-  metaflow_extensions/
+  metaflow_extensions/         ← NO __init__.py here (implicit namespace package)
     my_scheduler/
       plugins/
-        mfextinit_my_scheduler.py     <- extension registration
+        mfextinit_my_scheduler.py     ← extension registration
         my_scheduler/
-          my_scheduler_deployer.py    <- DeployerImpl subclass
-          my_scheduler_objects.py     <- DeployedFlow / TriggeredRun
-          my_scheduler_cli.py         <- CLI group
+          my_scheduler_deployer.py    ← DeployerImpl subclass
+          my_scheduler_objects.py     ← DeployedFlow / TriggeredRun
+          my_scheduler_cli.py         ← CLI group
 ```
 
 After `pip install -e .`, `Deployer(flow_file).my_scheduler(...)` is available with no other registration needed. Metaflow discovers `mfextinit_*.py` automatically.
 
-## Common pitfalls
-
-Every new orchestrator implementation hits the same bugs. The scaffold pre-solves most of them; the validator catches the rest before CI.
-
-**1. `run_params` tuple vs list (`Cap.RUN_PARAMS`)** — Click's multi-value options return tuples. Passing a tuple to `trigger()` causes `TypeError` when two or more params are given. Fix: `run_params = list(run_params) if run_params else []`.
-
-**2. `--branch` not forwarded to step subprocesses (`Cap.PROJECT_BRANCH`)** — `@project` reads `current.branch_name` from the `--branch` flag at step runtime. Without it, all step tasks produce an empty branch name. Fix: include `--branch <branch>` in every step command the scheduler launches.
-
-**3. `METAFLOW_FLOW_CONFIG_VALUE` missing from container env (`Cap.CONFIG_EXPR`)** — `@config` and `@project` use this env var to reconstruct the config dict at task runtime. Without it, tasks run with empty config. Fix: read `flow._flow_state[FlowStateItems.CONFIGS]` at compile time and JSON-serialize it into the container environment.
-
-**4. `retry_count` hardcoded to 0 (`Cap.RETRY`)** — Metaflow's `@retry` uses the attempt number to decide whether to retry. Hardcoding 0 means the flow always sees attempt 0 and never retries. Fix: derive from the scheduler's native counter (`AWS_BATCH_JOB_ATTEMPT`, Kubernetes `restartCount`, Airflow `try_number - 1`, etc.).
-
-**5. `from_deployment()` fails on dotted names (`Cap.FROM_DEPLOYMENT`)** — DAG IDs for `@project`-decorated flows are dotted: `project.branch.FlowName`. Using the full string as a Python class name raises `SyntaxError`. Fix: `flow_name = identifier.split(".")[-1]`.
-
-**6. `@conda` broken for in-process executors (`Cap.CONDA`)** — `@conda` uses a class-level `_metaflow_home` that is only set in `runtime_init()`. For subprocess-based orchestrators this is called automatically when the step subprocess re-enters the Metaflow runtime. For **in-process executors** (Dagster `execute_job()`, Windmill sync functions) `runtime_init()` is never called, leaving conda packages absent from `PYTHONPATH` and steps failing with `ModuleNotFoundError`. Fix: wrap the step command with `["conda", "run", "--no-capture-output", "-n", conda_env_name, "python", ...]`. For subprocess-based orchestrators, pass `--environment conda` to the step command (already in the generated scaffold).
-
-**7. Extension not auto-discovered (`Deployer` missing `.my_scheduler()`)** — `Deployer(flow_file).my_scheduler()` raises `AttributeError` with no indication why. Metaflow reads `DEPLOYER_IMPL_PROVIDERS_DESC` from `mfextinit_<name>.py`; if it's missing, misnamed, in the wrong directory, or the descriptor is malformed, the deployer is silently not registered. Fix: ensure `mfextinit_<name>.py` lives at `metaflow_extensions/<name>/plugins/` and `DEPLOYER_IMPL_PROVIDERS_DESC = [("<name>", ".<name>.<name>_deployer.<Class>DeployerImpl")]`. Run `python -m metaflow_orchestrator_kit.validate .` to catch this before CI.
-
-**8. Docker workers do not share `/tmp` between steps; bash input passing varies by scheduler** — Each step in a Docker-worker scheduler (Windmill, Prefect, Argo) runs in a separate container. Files written to `/tmp` in the init step (e.g. a `run_id` file) are NOT visible to the next step container.
-
-Additionally, different schedulers pass inputs to bash scripts in different ways:
-- Some schedulers inject inputs as environment variables (`$MY_INPUT`)
-- Windmill CE injects inputs via a **prepended shell preamble** (`my_input="value"` prepended before the script). This is a shell variable, not an exported env var. If your script then runs `export SOME_OTHER_VAR=...`, it may shadow the prepended variable. This causes inputs to appear empty even though the scheduler shows them as passed correctly.
-
-Options for reliable inter-step data passing in Docker schedulers:
-1. **Use `same_worker: true`** (Windmill-specific): forces all steps in the flow to run in the same worker container, so `/tmp` is shared. This is the most reliable option for local integration testing.
-2. **Use the scheduler's native return-value mechanism**: some schedulers let bash modules return values (e.g. Windmill stdout) that subsequent modules receive as inputs. Test with a minimal script before relying on this pattern.
-3. **Use an external store**: write the run ID to a shared key-value store (Redis, database) and read it from subsequent steps.
-
-**8b. Docker-based workers cannot reach the local filesystem (host paths)** — Schedulers that run workers in Docker containers (Windmill, Prefect, Argo) isolate the worker filesystem from the host. The step command uses the absolute host path to the flow file (e.g. `/Users/me/project/flow.py`), but that path does not exist inside the container. The same applies to `METAFLOW_DATASTORE_SYSROOT_LOCAL`: if the sysroot path is a host-local directory, the worker writes to a different directory than the deployer reads from, so `wait_for_deployed_run()` polls forever.
-
-**Recommended fix (production):** Build a custom worker Docker image that has Metaflow installed via `pip install metaflow` and use a shared object store (S3/MinIO) as the datastore. This avoids all filesystem sharing problems.
-
-**Quick fix (local devstack only):** Add volume mounts to your docker-compose worker service and set `PYTHONPATH`:
-```yaml
-volumes:
-  - /Users:/Users   # macOS — use /home:/home on Linux
-  - /tmp:/tmp
-```
-**Warning:** Volume mounts expose your entire host user directory to the container, including your conda `site-packages`. Python running inside the container will discover and load all Metaflow extensions installed on the host — including any internal/private extensions that depend on services not available inside the container (e.g. a `service` metadata provider that requires an internal API). This causes cryptic failures like `Cannot locate metadata_provider plugin 'service'`. Mitigation: set `PYTHONPATH` to only the OSS metaflow source, not your full site-packages path, and do NOT include the extension package itself in `PYTHONPATH`:
-```bash
-# In the bash script emitted by the compiler (wrong):
-export PYTHONPATH=/path/to/metaflow:/path/to/metaflow-myscheduler
-
-# Correct: only the core source, not extension packages
-export PYTHONPATH=/path/to/metaflow
-```
-If you still see extension-loading failures, the container's Python may discover `metaflow_extensions/` directories within the mounted source tree. The safest solution for local testing is to install Metaflow inside the worker container's init script:
-```bash
-pip install metaflow requests  # in the step's bash preamble
-```
-
-**9. `METAFLOW_DATASTORE_SYSROOT_LOCAL` vs `--datastore-root` use different path formats** — `METAFLOW_DATASTORE_SYSROOT_LOCAL` is the **sysroot** (parent directory, no `.metaflow` suffix). The `--datastore-root` CLI argument to `step` and `init` commands is the **full datastore path** which includes the `.metaflow` subdirectory that LocalStorage appends. Using the same value for both causes steps to write to a double-nested path (`.metaflow/.metaflow`):
-```bash
-# Correct (these are different values):
-export METAFLOW_DATASTORE_SYSROOT_LOCAL='/tmp/mytest'              # no .metaflow
-python3 flow.py step start ... --datastore-root /tmp/mytest/.metaflow  # with .metaflow
-
-# Wrong (do not reuse the same value):
-export METAFLOW_DATASTORE_SYSROOT_LOCAL='/tmp/mytest/.metaflow'  # double .metaflow on read
-python3 flow.py step start ... --datastore-root /tmp/mytest/.metaflow
-```
-At compile time, use `os.environ.get("METAFLOW_DATASTORE_SYSROOT_LOCAL")` for the env var and `sysroot + "/.metaflow"` for the `--datastore-root` argument.
-
-**10. Every step including `start` requires `--input-paths`** — Without `--input-paths`, the step subprocess fails with `UnboundLocalError: cannot access local variable 'inputs'`. This is required for every step, not just `for`each splits. The format is `{run_id}/{parent_step}/{parent_task_id}`. The `start` step's parent is the `_parameters` task created by `init`:
-```bash
-# start step input (parent is init):
---input-paths "${run_id}/_parameters/1"
-
-# other steps (parent is previous step, task_id 1):
---input-paths "${run_id}/{parent_step}/1"
-
-# join steps (multiple parents, comma-separated):
---input-paths "${run_id}/branch_a/1,${run_id}/branch_b/1"
-```
-
-**10. `--run-param` is not an OSS Metaflow init option; use `METAFLOW_PARAMETER_<NAME>` env vars instead** — Some internal Metaflow forks added `--run-param "name=value"` to the `init` command to pre-populate parameters. OSS Metaflow's `init` does not have this option; passing it causes `Error: no such option: --run-param`. In OSS Metaflow, flow parameters are passed to the start step via `METAFLOW_PARAMETER_<NAME>` environment variables, not via `--run-param` in init:
-```bash
-# Wrong (NFLX-only):
-python flow.py init --run-id $RUN_ID --task-id 1 --run-param "alpha=0.9"
-
-# Correct (OSS): set env vars for the start step container instead:
-export METAFLOW_PARAMETER_ALPHA="0.9"
-python flow.py step start --run-id $RUN_ID --task-id 1 ...
-```
-Do not include `--run-param` in the init step command if your extension must work with OSS Metaflow.
-
-**10. `init` command missing `--task-id`** — The Metaflow `init` subcommand requires `--task-id` in OSS Metaflow (some internal forks made it optional). If you generate an init script without `--task-id`, the init step fails with `Error: Missing option '--task-id'`. Fix: always include `--task-id 1` in the init command (the init step always runs as task 1):
-```bash
-# Wrong — missing --task-id:
-python flow.py init --run-id $RUN_ID
-
-# Correct:
-python flow.py init --run-id $RUN_ID --task-id 1
-```
-
-**11. `--tag` passed as a global CLI flag instead of a subcommand argument** — Metaflow's flow CLI does not accept `--tag` as a top-level global option. `--tag` is only valid after the subcommand (`step`, `run`, `init`). Passing it before the subcommand causes `Error: no such option: --tag` inside the Docker worker. Fix: append `--tag <value>` to the command list after `"step"`, `"step_name"`, not before:
-```python
-# Wrong — --tag before "step":
-cmd = [python, flow, "--no-pylint", "--tag", tag, "step", step_name, ...]
-
-# Correct — --tag after the step subcommand:
-cmd = [python, flow, "--no-pylint", "step", step_name, "--tag", tag, ...]
-```
-
-**10. Scheduler auth tokens expire** — If your scheduler issues short-lived auth tokens (Windmill, Kestra), tests that start a long-running deploy+trigger sequence may fail with 401 on the trigger API call because the token used at `create()` time has expired by the time `trigger()` is called. Fix: either use long-lived tokens (service account tokens in Windmill: `Settings > Users & Tokens > Tokens > Add token` with no expiry), or fetch a fresh token at the start of each `trigger()` call rather than caching the token from `create()`.
-
-**12. `trigger` CLI command must write `deployer_attribute_file` BEFORE executing steps** — The Metaflow `Deployer` API calls the `trigger` CLI command as a subprocess and waits for `deployer_attribute_file` to appear (via `handle_timeout`, default 3600s). For orchestrators that execute steps directly in the trigger subprocess (Mage, Dagster direct execution), the trigger command typically writes the attribute file AFTER all steps complete. This causes the deployer's `trigger()` call to block for the entire flow execution time. If the test timeout (pytest `--timeout`) is shorter than the flow execution time, the subprocess is killed before writing the file and the test fails with `Timeout`. Fix: write `deployer_attribute_file` BEFORE executing the steps, then run steps in the background or synchronously afterward. This way `handle_timeout` returns immediately with the run pathspec, and `wait_for_deployed_run()` polls for completion:
-```python
-# In the trigger CLI command:
-run_id = "myscheduler-" + uuid.uuid4().hex[:12]
-pathspec = f"{flow_name}/{run_id}"
-
-# WRITE THE FILE FIRST before running any steps.
-# This unblocks Deployer.trigger() immediately.
-if deployer_attribute_file:
-    with open(deployer_attribute_file, "w") as f:
-        json.dump({"pathspec": pathspec}, f)
-
-# THEN execute the steps (synchronously or async).
-_execute_flow_steps(run_id, ...)
-```
-
-**13. Scheduler internal indexing delay after workflow creation** — Some schedulers (Mage, Prefect, Windmill) index or cache newly-created pipelines/DAGs asynchronously. If you make a second API call immediately after the creation POST (e.g. creating a schedule, listing runs, or triggering), the scheduler may return 500 or `'NoneType' object has no attribute 'uuid'` because the pipeline is not yet in the cache. Fix: add a short delay between `_create_pipeline()` / `_compile_workflow()` and any subsequent API call that references the newly-created resource. A 1–2 second sleep is enough for most schedulers. If the second call is not strictly required for the trigger to work (e.g. schedule creation for Mage), make it optional and catch failures gracefully:
-```python
-try:
-    schedule_id = _create_api_trigger(client, pipeline_uuid)
-except Exception:
-    schedule_id = None  # non-fatal: trigger works without a registered schedule
-```
+> **CRITICAL:** `metaflow_extensions/` must NOT have `__init__.py`. It is an implicit namespace package. Adding `__init__.py` breaks extension discovery — `Deployer(flow).my_scheduler()` will silently not exist after install.
 
 ## Capabilities
 
@@ -341,7 +129,81 @@ except Exception:
 | `Cap.RESUME` | `ORIGIN_RUN_ID` resume: re-run from a previously failed step |
 | `Cap.SCHEDULE` | `@schedule` cron trigger |
 
-## Example `ux_test_config.yaml`
+Declare your supported capabilities in the deployer:
+
+```python
+from metaflow_orchestrator_kit import Cap, REQUIRED
+
+SUPPORTED_CAPABILITIES = REQUIRED | {Cap.NESTED_FOREACH, Cap.SCHEDULE}
+```
+
+## Usage
+
+### Validate (static analysis — no scheduler needed)
+
+```bash
+python -m metaflow_orchestrator_kit.validate ./my_scheduler/
+# equivalent:
+metaflow-orchestrator-validate ./my_scheduler/
+```
+
+Example output:
+
+```
+Validating: /path/to/my_scheduler/
+
+  PASS  metaflow_extensions/ has no __init__.py
+  PASS  mfextinit_<name>.py exists
+  PASS  DEPLOYER_IMPL_PROVIDERS_DESC has correct structure
+  PASS  run_params uses list() not tuple()
+  FAIL  METAFLOW_FLOW_CONFIG_VALUE in step env
+        Problem: METAFLOW_FLOW_CONFIG_VALUE not found in any extension file
+        Fix: Extract at compile time: from metaflow.flowspec import FlowStateItems; ...
+  PASS  --branch passed to step commands
+  PASS  retry_count reads from attempt, not hardcoded to 0
+  PASS  DATASTORE_SYSROOT captured at compile time
+  PASS  ENVIRONMENT_TYPE passed to step command
+
+Results: 8 passed, 1 failed
+```
+
+### Test (one-command compliance suite)
+
+```bash
+python -m metaflow_orchestrator_kit.test \
+  --scheduler-type my_scheduler \
+  --deploy-args host=http://localhost:8000,token=abc123
+
+# Full options:
+python -m metaflow_orchestrator_kit.test \
+  --scheduler-type windmill \
+  --deploy-args windmill_host=http://localhost:8000,windmill_token=abc123 \
+  --metaflow-src /path/to/metaflow \
+  --test-modules compliance,basic,config,dag \
+  --workers 4
+# equivalent:
+metaflow-orchestrator-test --scheduler-type windmill --deploy-args ...
+```
+
+This command:
+1. Writes `ux_test_config_windmill.yaml` automatically (scheduler-specific name avoids conflicts)
+2. Creates an isolated `METAFLOW_DATASTORE_SYSROOT_LOCAL` per run (prevents contamination between concurrent test runs)
+3. Verifies scheduler reachability before starting tests
+4. Runs the compliance tests and reports pass/fail per capability
+
+### Wire compliance into CI
+
+```yaml
+- name: Run compliance tests
+  run: |
+    python -m metaflow_orchestrator_kit.test \
+      --scheduler-type my_scheduler \
+      --deploy-args host=${{ secrets.SCHEDULER_HOST }}
+```
+
+Or use the generated `ux-tests-my_scheduler.yml` as a starting point.
+
+### Example `ux_test_config.yaml`
 
 ```yaml
 backends:
@@ -352,6 +214,65 @@ backends:
     deploy_args:
       host: http://localhost:8080
     enabled: true
+```
+
+## Common pitfalls
+
+Every new orchestrator implementation hits the same bugs. The scaffold pre-solves most of them; the validator catches the rest before CI.
+
+**1. `run_params` tuple vs list (`Cap.RUN_PARAMS`)** — Click's multi-value options return tuples. Passing a tuple to `trigger()` causes `TypeError` when two or more params are given. Fix: `run_params = list(run_params) if run_params else []`.
+
+**2. `--branch` not forwarded to step subprocesses (`Cap.PROJECT_BRANCH`)** — `@project` reads `current.branch_name` from the `--branch` flag at step runtime. Without it, all step tasks produce an empty branch name. Fix: include `--branch <branch>` in every step command the scheduler launches.
+
+**3. `METAFLOW_FLOW_CONFIG_VALUE` missing from container env (`Cap.CONFIG_EXPR`)** — `@config` and `@project` use this env var to reconstruct the config dict at task runtime. Without it, tasks run with empty config. Fix: read `flow._flow_state[FlowStateItems.CONFIGS]` at compile time and JSON-serialize it into the container environment.
+
+**4. `retry_count` hardcoded to 0 (`Cap.RETRY`)** — Metaflow's `@retry` uses the attempt number to decide whether to retry. Hardcoding 0 means the flow always sees attempt 0 and never retries. Fix: derive from the scheduler's native counter (`AWS_BATCH_JOB_ATTEMPT`, Kubernetes `restartCount`, Airflow `try_number - 1`, etc.).
+
+**5. `from_deployment()` fails on dotted names (`Cap.FROM_DEPLOYMENT`)** — DAG IDs for `@project`-decorated flows are dotted: `project.branch.FlowName`. Using the full string as a Python class name raises `SyntaxError`. Fix: `flow_name = identifier.split(".")[-1]`.
+
+**6. `@conda` broken for in-process executors (`Cap.CONDA`)** — `@conda` uses a class-level `_metaflow_home` that is only set in `runtime_init()`. For subprocess-based orchestrators this is called automatically. For **in-process executors** (Dagster `execute_job()`) `runtime_init()` is never called, leaving conda packages absent from `PYTHONPATH`. Fix: wrap the step command with `["conda", "run", "--no-capture-output", "-n", conda_env_name, "python", ...]`, or pass `--environment conda` to the step command for subprocess-based orchestrators.
+
+**7. Extension not auto-discovered (`Deployer` missing `.my_scheduler()`)** — `Deployer(flow_file).my_scheduler()` raises `AttributeError` with no indication why. Two common causes:
+- `metaflow_extensions/__init__.py` exists (must NOT — it's an implicit namespace package)
+- `DEPLOYER_IMPL_PROVIDERS_DESC` is missing, misnamed, or malformed in `mfextinit_<name>.py`
+
+Fix: ensure `mfextinit_<name>.py` lives at `metaflow_extensions/<name>/plugins/` with correct `DEPLOYER_IMPL_PROVIDERS_DESC`. Run `python -m metaflow_orchestrator_kit.validate .` to catch this before CI.
+
+**8. Docker workers do not share `/tmp` between steps** — Each step in a Docker-worker scheduler (Windmill, Prefect, Argo) runs in a separate container. Files written to `/tmp` in the init step are NOT visible to subsequent step containers. Options: use `same_worker: true` if the scheduler supports it, use a shared external store, or use the scheduler's native return-value mechanism.
+
+**9. Docker workers cannot reach host filesystem (flow file path, sysroot)** — Schedulers that run workers in Docker containers isolate the worker filesystem. The step command uses the absolute host path to the flow file, but that path does not exist inside the container. Fix for production: build a custom worker image with Metaflow and use S3/MinIO as the datastore. Fix for local testing: add volume mounts (`-v /Users:/Users` on macOS, `-v /home:/home` on Linux) and set `PYTHONPATH` to only the OSS metaflow source to avoid loading private extensions from host site-packages.
+
+**10. `METAFLOW_DATASTORE_SYSROOT_LOCAL` vs `--datastore-root` use different formats** — `METAFLOW_DATASTORE_SYSROOT_LOCAL` is the parent directory (no `.metaflow` suffix). `--datastore-root` includes the `.metaflow` subdirectory. Using the same value for both causes double-nesting. Fix: `METAFLOW_DATASTORE_SYSROOT_LOCAL=/tmp/mytest` and `--datastore-root /tmp/mytest/.metaflow`.
+
+**11. Every step including `start` requires `--input-paths`** — Without it, the step subprocess fails with `UnboundLocalError`. The `start` step's parent is the `_parameters` task created by `init`:
+```bash
+--input-paths "${run_id}/_parameters/1"        # start step
+--input-paths "${run_id}/{parent_step}/1"       # other steps
+--input-paths "${run_id}/branch_a/1,${run_id}/branch_b/1"  # join steps
+```
+
+**12. `--run-param` is not an OSS Metaflow option** — Some internal forks added `--run-param "name=value"` to `init`. OSS Metaflow does not have this; it causes `Error: no such option: --run-param`. In OSS, flow parameters are passed via `METAFLOW_PARAMETER_<NAME>` env vars on the start step container.
+
+**13. `init` command requires `--task-id`** — OSS Metaflow's `init` requires `--task-id`. Always include `--task-id 1` (init always runs as task 1).
+
+**14. `--tag` must come after the subcommand, not before** — `--tag` is not a global option. Passing it before `step` or `init` causes `Error: no such option: --tag`. Fix: append `--tag <value>` after the subcommand name.
+
+**15. Scheduler auth tokens expire** — Short-lived tokens (Windmill, Kestra) may expire between `create()` and `trigger()` in long-running tests. Fix: use long-lived service account tokens, or fetch a fresh token at the start of each `trigger()` call.
+
+**16. `trigger` CLI must write `deployer_attribute_file` BEFORE executing steps** — The Metaflow `Deployer` blocks waiting for `deployer_attribute_file` to appear. For orchestrators that execute steps synchronously in the trigger subprocess, writing the file after all steps complete causes the entire flow execution to happen inside the `trigger()` call. Fix: write the attribute file first, then execute steps:
+```python
+if deployer_attribute_file:
+    with open(deployer_attribute_file, "w") as f:
+        json.dump({"pathspec": pathspec}, f)
+_execute_flow_steps(run_id, ...)   # write file BEFORE this
+```
+
+**17. Scheduler async indexing delay after creation** — Some schedulers (Mage, Prefect, Windmill) index newly-created pipelines asynchronously. Secondary API calls immediately after creation (schedule creation, run listing) may return 500 or `NoneType` errors. Fix: add a 1–2 second sleep, or make secondary post-creation calls non-fatal:
+```python
+try:
+    schedule_id = _create_api_trigger(client, pipeline_uuid)
+except Exception:
+    schedule_id = None  # non-fatal
 ```
 
 ## Development
