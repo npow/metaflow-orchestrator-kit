@@ -135,3 +135,46 @@ datastore_type = flow_datastore.TYPE if flow_datastore.TYPE in _PORTABLE_DATASTO
 ```
 
 For remote Flyte/K8s execution: use `--datastore s3` and an in-cluster MinIO/S3-compatible endpoint — local datastore doesn't work across pods.
+
+---
+
+**#36 Mage does not retry blocks by default — implement in-block step retry**
+
+Mage's `kwargs['retry']['attempts']` is 1-indexed (first execution = 1), but Mage does NOT automatically retry blocks on failure. This means you cannot rely on the scheduler's retry mechanism to honor Metaflow's `@retry(times=N)`.
+
+Fix: implement retry logic within the generated block code itself. At compile time, extract `@retry(times=N)` from the step's decorators and embed a retry loop:
+
+```python
+# At compile time:
+max_retries = 0
+for deco in step_node.decorators:
+    if deco.name == "retry":
+        max_retries = int(deco.attributes.get("times", 3))
+
+# In generated block code:
+for retry_count in range(max_retries + 1):
+    cmd = [..., "--retry-count", str(retry_count), ...]
+    result = subprocess.run(cmd, ...)
+    if result.returncode == 0:
+        break
+    if retry_count < max_retries:
+        continue
+    raise RuntimeError(...)
+```
+
+Without this, `@retry` flows fail because the flaky step fails on attempt 0 and no retry is attempted.
+
+---
+
+**#37 Foreach _foreach_num_splits reader must search for any data.json, not a specific retry count**
+
+When reading `_foreach_num_splits` from the local datastore after a foreach step, the data file is named `{retry_count}.data.json`. If the reader hardcodes a specific retry count (e.g., from the current block's context), it will miss the actual data file if the step succeeded on a different attempt.
+
+Fix: search the task directory for any `*.data.json` file and use the highest-numbered one (latest successful attempt):
+
+```python
+_dir = os.path.join(sysroot, ".metaflow", flow, run_id, step, task_id)
+_files = sorted([f for f in os.listdir(_dir) if f.endswith(".data.json")], reverse=True)
+if _files:
+    data_path = os.path.join(_dir, _files[0])
+```

@@ -131,3 +131,26 @@ For in-process executors: wrap the step command:
 ```python
 ["conda", "run", "--no-capture-output", "-n", conda_env_name, "python", flow_file, "step", ...]
 ```
+
+---
+
+**#38 Docker container HOME differs from host HOME — datastore file search must check both**
+
+When running Mage (or similar) in Docker with `docker run -v "$HOME:$HOME"`, the container's HOME is `/root` but GHA's HOME is `/home/runner`. The step subprocess writes artifacts to `METAFLOW_DATASTORE_SYSROOT_LOCAL` (set to `$HOME=/home/runner`), but the data may end up at either path depending on container configuration.
+
+When reading datastore files (e.g., `_foreach_num_splits` for foreach), search multiple candidate directories:
+
+```python
+candidates = [
+    env.get("METAFLOW_DATASTORE_SYSROOT_LOCAL", ""),
+    "/home/runner",
+    "/root",
+    os.environ.get("HOME", ""),
+]
+for cand in candidates:
+    path = os.path.join(cand, ".metaflow", flow, run_id, step, task_id)
+    if os.path.isdir(path):
+        break
+```
+
+Without this, foreach_count defaults to 1 and the foreach body only processes one item.
