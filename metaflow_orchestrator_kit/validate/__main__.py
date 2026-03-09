@@ -865,6 +865,223 @@ def _check_from_deployment_dotted(files: dict) -> _Check:
     )
 
 
+def _check_split_index_in_foreach(files: dict) -> _Check:
+    """Foreach body step commands must include --split-index.
+
+    When a foreach step fans out to N body tasks, each body task runs with a
+    unique --split-index (0..N-1). Without it, all body tasks share the same
+    artifact path and the join step cannot distinguish outputs.
+    """
+    all_content = "\n".join(files.values())
+
+    # Check if --split-index is referenced anywhere in the implementation.
+    has_split_index = bool(
+        re.search(r'"--split-index"', all_content) or
+        re.search(r"'--split-index'", all_content) or
+        re.search(r'\bsplit_index\b', all_content)
+    )
+
+    # Only trigger if there is evidence of foreach handling (foreach steps exist
+    # in the compiler / step command builder).
+    has_foreach_handling = bool(
+        re.search(r'\bforeach\b', all_content, re.IGNORECASE) or
+        re.search(r'split_index', all_content) or
+        re.search(r'"--split-index"', all_content)
+    )
+
+    # If neither foreach nor split_index is mentioned, the implementation may not
+    # support foreach at all — skip rather than false-positive.
+    if not has_foreach_handling and not has_split_index:
+        return _Check(
+            "--split-index in foreach body step commands",
+            True,
+            "no foreach handling found — skipped (add --split-index if you implement foreach)",
+        )
+
+    if has_split_index:
+        return _Check(
+            "--split-index in foreach body step commands",
+            True,
+            "--split-index found in step command construction",
+        )
+
+    return _Check(
+        "--split-index in foreach body step commands",
+        False,
+        "foreach handling found but --split-index not passed to foreach body step commands",
+        hint=(
+            "Add --split-index to foreach body step commands. "
+            "Each body task needs a unique index so the join step can collect their outputs. "
+            "Example: cmd += ['--split-index', str(split_index)]  "
+            "where split_index is the scheduler's 0-based iteration counter for the foreach fan-out."
+        ),
+    )
+
+
+def _check_parameters_passed_to_init(files: dict) -> _Check:
+    """Flow Parameters must be forwarded as CLI args to the init command.
+
+    Metaflow's init command accepts --<param_name> <value> for each Parameter.
+    Without forwarding run_kwargs/run_params as CLI args to init, all Parameters
+    use their default values.
+    """
+    all_content = "\n".join(files.values())
+
+    # If there's no init subcommand at all, skip.
+    has_init_subcommand = bool(
+        re.search(r'"init"', all_content) or re.search(r"'init'", all_content)
+    )
+    if not has_init_subcommand:
+        return _Check(
+            "Flow Parameters forwarded to init command",
+            True,
+            "no init subcommand found — skipped",
+        )
+
+    # Positive signals: parameter forwarding mechanisms.
+    # Look for --{param}, run_params, run_kwargs, or METAFLOW_PARAMETER_ env vars
+    # in proximity to init command construction.
+    has_param_forwarding = bool(
+        re.search(r'run_params', all_content) or
+        re.search(r'run_kwargs', all_content) or
+        re.search(r'METAFLOW_PARAMETER_', all_content) or
+        re.search(r'"--\{.*param', all_content) or
+        re.search(r"'--\{.*param", all_content) or
+        re.search(r'f"--\{', all_content) or
+        re.search(r"f'--\{", all_content)
+    )
+
+    if has_param_forwarding:
+        return _Check(
+            "Flow Parameters forwarded to init command",
+            True,
+            "parameter forwarding mechanism found (run_params/run_kwargs/METAFLOW_PARAMETER_)",
+        )
+
+    # Negative signal: init command is hardcoded with only --run-id and --task-id,
+    # with no parameter injection mechanism anywhere in the codebase.
+    # Look for init command construction that is clearly static (list literal with
+    # "init", "--run-id", "--task-id" but nothing parameter-related).
+    init_hardcoded = bool(
+        re.search(
+            r'"init"[^]}\n]{0,200}"--run-id"[^]}\n]{0,200}"--task-id"',
+            all_content,
+        ) or re.search(
+            r"'init'[^]}\n]{0,200}'--run-id'[^]}\n]{0,200}'--task-id'",
+            all_content,
+        )
+    )
+
+    if init_hardcoded and not has_param_forwarding:
+        return _Check(
+            "Flow Parameters forwarded to init command",
+            False,
+            "init command appears hardcoded with only --run-id/--task-id and no parameter forwarding",
+            hint=(
+                "Forward run_params as CLI args to the init command. "
+                "In OSS Metaflow, Parameters are passed to init as --<param_name> <value> pairs. "
+                "Without forwarding, all Parameter values use their defaults (often empty string), "
+                "causing assert '' == 'expected_value' failures. "
+                "Example: for param_str in run_params: cmd += param_str.split('=', 1) "
+                "OR inject as METAFLOW_PARAMETER_<NAME>=<value> env vars for the start step."
+            ),
+        )
+
+    return _Check(
+        "Flow Parameters forwarded to init command",
+        True,
+        "no obvious parameter-forwarding gap detected (verify manually that run_params reach init)",
+    )
+
+
+def _check_from_deployment_stores_metadata(files: dict) -> _Check:
+    """from_deployment must persist deployment metadata at create() time.
+
+    from_deployment(name) receives only a plain name string. To trigger new runs,
+    it needs schedule tokens, flow file path, and other deployment details that
+    were known at create() time. These must be stored (e.g.,
+    ~/.metaflow/<scheduler>_deployments/<name>.json) and read back in
+    from_deployment().
+    """
+    result = _find_objects_file(files)
+    if not result:
+        return _Check(
+            "from_deployment reads persisted metadata",
+            False,
+            "objects file not found",
+        )
+    path, content = result
+
+    if "from_deployment" not in content:
+        return _Check(
+            "from_deployment reads persisted metadata",
+            True,
+            "from_deployment() not found — skipped",
+        )
+
+    all_content = "\n".join(files.values())
+
+    # Positive signals: evidence of metadata persistence and retrieval.
+    has_persistence = bool(
+        re.search(r'json\.dump', all_content) or
+        re.search(r'json\.dumps', all_content) or
+        re.search(r'\.write\s*\(', all_content)
+    )
+    has_retrieval = bool(
+        re.search(r'json\.load', all_content) or
+        re.search(r'json\.loads', all_content) or
+        re.search(r'\.read\s*\(', all_content)
+    )
+
+    # Check if from_deployment has any file-reading or data-retrieval logic nearby.
+    # Heuristic: look for file open or json.load within 600 chars of from_deployment.
+    from_deployment_window = ""
+    for m in re.finditer(r'def from_deployment\b', all_content):
+        from_deployment_window += all_content[m.start():m.start() + 800]
+
+    retrieval_near_from_deployment = bool(
+        re.search(r'json\.load|open\s*\(|\.read\s*\(', from_deployment_window)
+    )
+
+    if retrieval_near_from_deployment:
+        return _Check(
+            "from_deployment reads persisted metadata",
+            True,
+            f"metadata retrieval found near from_deployment() in {path}",
+        )
+
+    if has_persistence and has_retrieval:
+        return _Check(
+            "from_deployment reads persisted metadata",
+            True,
+            "json persistence and retrieval found (verify from_deployment uses stored metadata)",
+        )
+
+    # from_deployment exists but no evidence of stored metadata retrieval.
+    if "from_deployment" in content and not retrieval_near_from_deployment:
+        return _Check(
+            "from_deployment reads persisted metadata",
+            False,
+            f"from_deployment() found in {path} but no metadata retrieval (json.load/open/read) detected near it",
+            hint=(
+                "from_deployment(name) receives only a plain name string. "
+                "To trigger new runs it needs schedule tokens, flow file path, and other "
+                "deployment details known at create() time. "
+                "Store these at deploy time: "
+                "json.dump(metadata, open(~/.metaflow/<scheduler>_deployments/<name>.json, 'w')) "
+                "and read them back in from_deployment(): "
+                "metadata = json.load(open(~/.metaflow/<scheduler>_deployments/<name>.json)). "
+                "Without this, from_deployment() cannot trigger runs without re-deploying."
+            ),
+        )
+
+    return _Check(
+        "from_deployment reads persisted metadata",
+        True,
+        "no obvious metadata persistence gap detected (verify manually)",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main validation entry point
 # ---------------------------------------------------------------------------
@@ -895,6 +1112,9 @@ def validate(directory: str) -> List[_Check]:
         _check_scheduler_api_optional(files),
         _check_from_deployment_dotted(files),
         _check_not_supported_has_reason(files),
+        _check_split_index_in_foreach(files),
+        _check_parameters_passed_to_init(files),
+        _check_from_deployment_stores_metadata(files),
     ]
     return checks
 

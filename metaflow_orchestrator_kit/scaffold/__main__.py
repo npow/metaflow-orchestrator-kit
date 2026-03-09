@@ -421,6 +421,10 @@ class {classname}DeployerImpl(DeployerImpl):
             "--task-id", task_id,
             "--retry-count", str(retry_count),  # TODO: SCHEDULER API — replace 0 with scheduler attempt
             "--input-paths", input_paths,  # REQUIRED: see format notes above
+            # REQUIRED for foreach body steps: --split-index <N>
+            # Each body task needs a unique 0-based index.
+            # split_index must come from the scheduler's iteration counter.
+            # Example: if split_index is not None: cmd += ["--split-index", str(split_index)]
             # TODO: SCHEDULER API — add --tag options here (after "step <name>"), not before:
             #   for tag in tags:
             #       cmd += ["--tag", tag]
@@ -587,6 +591,14 @@ def trigger(name, run_param, deployer_attribute_file):
     # REQUIRED (Cap.RUN_PARAMS): run_param arrives as a tuple from Click.
     # Convert to list before using:
     run_params = list(run_param)
+
+    # REQUIRED: Forward run_params as CLI args to the init command.
+    # Parameters are passed as --<param_name> <value> to `metaflow init`.
+    # Without this, all Parameter values will be empty/default.
+    # run_params contains strings like "alpha=0.9"; split and forward them to init:
+    #   for param_str in run_params:
+    #       key, _, value = param_str.partition("=")
+    #       init_cmd += [f"--{key}", value]
 
     # TODO: SCHEDULER API — trigger the workflow named `name` with `run_params`.
     # Replace this example request with the real {name} API call:
