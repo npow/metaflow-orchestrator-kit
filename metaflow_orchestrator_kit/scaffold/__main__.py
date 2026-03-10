@@ -870,6 +870,28 @@ jobs:
           name: junit-${{ matrix.backend }}
           path: junit-${{ matrix.backend }}.xml
           if-no-files-found: ignore
+
+  test-report:
+    if: always()
+    needs: [ux-tests]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - name: Download all JUnit XML artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: junit-*
+          path: junit-artifacts/
+
+      - name: Publish combined test report
+        uses: dorny/test-reporter@v1
+        with:
+          name: "Test Results — All Backends"
+          path: "junit-artifacts/**/*.xml"
+          reporter: java-junit
+          fail-on-error: false
 """
 
 
