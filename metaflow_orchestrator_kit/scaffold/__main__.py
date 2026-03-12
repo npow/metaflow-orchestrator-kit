@@ -81,6 +81,20 @@ OrchestratorCapabilities contract (DO NOT remove these comments):
                        conda run -n <env_name> python ...
                        See _build_step_command docstring for full details.
 
+  Cap.FOREACH_COUNT — _foreach_num_splits MUST be read via FlowDataStore API,
+                      not by cracking open pickle blobs directly.
+                      Use: FlowDataStore → get_task_datastore → tds[\'_foreach_num_splits\']
+                      See: docs/pitfalls/foreach-artifact-reading.md
+
+  Cap.TIMEOUT       — @timeout(seconds=N) MUST be mapped to the orchestrator\'s
+                      native timeout mechanism.  For subprocess-based orchestrators,
+                      also pass timeout=N to subprocess.run().
+
+  Cap.RETRY_NATIVE  — Retry SHOULD be delegated to the orchestrator\'s native
+                      mechanism rather than manual for-loops.
+                      Derive --retry-count from the orchestrator\'s attempt counter.
+                      See: docs/pitfalls/retry-timeout-delegation.md
+
 See metaflow_orchestrator_kit.capabilities for the full list.
 
 IMPORTANT — NotSupportedException requires an architectural reason:
@@ -463,6 +477,17 @@ class {classname}DeployerImpl(DeployerImpl):
             #   for tag in tags:
             #       cmd += ["--tag", tag]
         ]
+
+        # RECOMMENDED: Read artifacts (like _foreach_num_splits) via FlowDataStore API:
+        #   from metaflow.datastore import FlowDataStore
+        #   from metaflow.plugins import DATASTORES
+        #   _impl = next(d for d in DATASTORES if d.TYPE == DATASTORE_TYPE)
+        #   _root = _impl.get_datastore_root_from_config(lambda *a: None)
+        #   _fds = FlowDataStore(FLOW_NAME, None, storage_impl=_impl, ds_root=_root)
+        #   _tds = _fds.get_task_datastore(run_id, step_name, task_id, attempt=0, mode='r')
+        #   num_splits = int(_tds['_foreach_num_splits'])
+        # DO NOT use pickle.load(gzip.open(...)) to read artifacts — it bypasses
+        # the datastore abstraction and breaks on remote (S3/Azure/GCS) datastores.
 
         return cmd
 '''

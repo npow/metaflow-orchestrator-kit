@@ -1534,6 +1534,74 @@ def _check_metaflow_parameters_env_not_used(files: dict) -> _Check:
 # ---------------------------------------------------------------------------
 
 
+def _check_no_pickle_artifact_reading(files: dict) -> _Check:
+    """Warn if pickle.load/pickle.loads is used to read Metaflow artifacts."""
+    result = _find_in_any_file(files)
+    if not result:
+        return _Check("no pickle artifact reading", True, "no files to check")
+    _, content = result
+    # Look for pickle.load patterns that suggest manual artifact reading
+    pickle_patterns = [
+        r'pickle\.loads?\s*\(',
+        r'gzip\.open\s*\(.*pickle',
+    ]
+    for pattern in pickle_patterns:
+        match = re.search(pattern, content)
+        if match:
+            return _Check(
+                "no pickle artifact reading",
+                False,
+                "Found pickle-based artifact reading — use FlowDataStore API instead",
+                hint=(
+                    "Replace pickle.load(gzip.open(...)) with FlowDataStore.get_task_datastore(). "
+                    "See docs/pitfalls/foreach-artifact-reading.md"
+                ),
+            )
+    return _Check("no pickle artifact reading", True, "no pickle artifact patterns found")
+
+
+def _check_no_manual_retry_loops(files: dict) -> _Check:
+    """Warn if manual for-loop retry patterns are used instead of orchestrator-native retry."""
+    result = _find_in_any_file(files)
+    if not result:
+        return _Check("no manual retry loops", True, "no files to check")
+    _, content = result
+    # Look for patterns like: for retry_count in range(max_retries
+    # or: for _attempt in range(_max_retries
+    pattern = r'for\s+\w*(?:retry|attempt)\w*\s+in\s+range\s*\(\s*\w*(?:max_retries|retries)'
+    if re.search(pattern, content, re.IGNORECASE):
+        return _Check(
+            "no manual retry loops",
+            False,
+            "Found manual retry loop — delegate retry to orchestrator's native mechanism",
+            hint=(
+                "Replace 'for retry_count in range(max_retries + 1)' loops with the "
+                "orchestrator's native retry config. See docs/pitfalls/retry-timeout-delegation.md"
+            ),
+        )
+    return _Check("no manual retry loops", True, "no manual retry patterns found")
+
+
+def _check_no_hardcoded_tmp_paths(files: dict) -> _Check:
+    """Warn if hardcoded /tmp/mf_ paths are used for inter-step communication."""
+    result = _find_in_any_file(files)
+    if not result:
+        return _Check("no hardcoded /tmp/mf_ paths", True, "no files to check")
+    _, content = result
+    if re.search(r'/tmp/mf_', content):
+        return _Check(
+            "no hardcoded /tmp/mf_ paths",
+            False,
+            "Found hardcoded /tmp/mf_ path — use orchestrator inter-step mechanism instead",
+            hint=(
+                "Replace /tmp file sharing with the orchestrator's native inter-step data "
+                "passing mechanism (return values, environment variables, or shared store). "
+                "/tmp is not shared across containers in Docker-based schedulers."
+            ),
+        )
+    return _Check("no hardcoded /tmp/mf_ paths", True, "no hardcoded /tmp paths found")
+
+
 def validate(directory: str) -> List[_Check]:
     """Run all checks on the given directory. Returns list of _Check results."""
     files = _find_files(directory)
@@ -1573,6 +1641,10 @@ def validate(directory: str) -> List[_Check]:
         # Checks from v3 gap analysis (pitfalls #31-#32)
         _check_conda_bin_in_gha_path(files),
         _check_dist_loadfile_for_conda_tests(files),
+        # Checks from pitfalls #38-#42
+        _check_no_pickle_artifact_reading(files),
+        _check_no_manual_retry_loops(files),
+        _check_no_hardcoded_tmp_paths(files),
     ]
     return checks
 
