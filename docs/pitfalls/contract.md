@@ -143,3 +143,28 @@ for deco in step_node.decorators:
 ```
 
 The `str()` call on a `config_expr` object evaluates the expression using the flow's compile-time config context. This requires configs to be populated (via `METAFLOW_CLICK_API_PROCESS_CONFIG=1` in the deployer subprocess environment).
+
+---
+
+**#36 Do NOT call `runtime_step_cli()` on decorator instances — use `--with` flags instead**
+
+Calling `StepDecorator.runtime_step_cli()` directly from the orchestrator (bypassing Metaflow's runtime lifecycle) is a contract violation that breaks whenever Metaflow changes its decorator internals. Example: Metaflow added `self.disabled` to `CondaStepDecorator` — any orchestrator calling `runtime_step_cli()` on a half-initialized decorator gets `AttributeError`.
+
+The `runtime_step_cli()` hook is designed to be called by Metaflow's own `LocalRuntime` after the full decorator lifecycle (`step_init` → `runtime_init` → `runtime_task_created` → `runtime_step_cli`). Orchestrators that instantiate decorators via `extract_step_decorator_from_decospec()` and call `runtime_step_cli()` directly will always have uninitialized attributes.
+
+Fix: forward compute/environment decorators (conda, kubernetes, sandbox, batch) as `--with` flags to the Metaflow CLI subprocess. Metaflow handles its own decorator lifecycle inside the subprocess.
+
+```python
+# At compile time, build per-step --with specs:
+_SKIP = {"retry", "timeout", "environment", "resources",
+         "project", "trigger", "trigger_on_finish", "schedule", "card"}
+
+for deco in step_node.decorators:
+    if deco.name in _SKIP:
+        continue
+    spec = deco.make_decorator_spec()
+    if spec:
+        cmd.insert(before_step_index, f"--with={spec}")
+```
+
+Decorators in the `_SKIP` set are handled natively by the orchestrator (retry policy, timeouts, env var injection) or have no meaning at step runtime (schedule, trigger, card).

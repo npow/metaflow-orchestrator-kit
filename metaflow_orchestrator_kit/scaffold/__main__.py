@@ -489,6 +489,35 @@ class {classname}DeployerImpl(DeployerImpl):
         # DO NOT use pickle.load(gzip.open(...)) to read artifacts — it bypasses
         # the datastore abstraction and breaks on remote (S3/Azure/GCS) datastores.
 
+        # REQUIRED: Forward compute/environment decorators as --with flags.
+        #
+        # At compile time, iterate over each step's decorators and emit
+        # --with=<spec> flags for decorators that Metaflow should manage
+        # internally (conda, kubernetes, sandbox, batch, etc.).
+        #
+        # IMPORTANT: Do NOT call runtime_step_cli() directly on decorator
+        # instances.  This couples your orchestrator to Metaflow's internal
+        # decorator lifecycle, which can change between releases (new attrs,
+        # changed init order).  Instead, pass decorator specs as --with flags
+        # and let Metaflow manage its own decorator lifecycle inside the
+        # step subprocess.
+        #
+        # Skip decorators already handled by the orchestrator natively:
+        #   _SKIP = {"retry", "timeout", "environment", "resources",
+        #            "project", "trigger", "trigger_on_finish",
+        #            "schedule", "card"}
+        #   for deco in step_node.decorators:
+        #       if deco.name in _SKIP:
+        #           continue
+        #       spec = deco.make_decorator_spec()
+        #       if spec:
+        #           cmd.insert(<before "step">, f"--with={spec}")
+        #
+        # Also forward @resources as a structured spec for compute backends:
+        #   resources_spec = _build_resources_spec(step_node)
+        #   if resources_spec:
+        #       cmd.insert(<before "step">, f"--with={resources_spec}")
+
         return cmd
 '''
 
